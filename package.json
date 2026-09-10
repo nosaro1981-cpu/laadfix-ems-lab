@@ -4,7 +4,22 @@
   "private": true,
   "type": "module",
   "main": "server.js",
-  "engines": { "node": ">=22" },
-  "scripts": { "build": "node --check server.js && node --check cloud-entry.mjs && node build-smoke.mjs", "start": "node server.js", "local": "node service-manager.mjs", "cloud": "node server.js", "ems": "node ems-server.mjs", "test": "node --test test.mjs ems.test.mjs relay.test.mjs cloud.test.mjs connection-intelligence.test.mjs", "relay": "node relay.mjs", "ocpp-test": "node server.mjs" },
-  "dependencies": { "express": "4.21.2", "ws": "8.18.3" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node --check server.js && node --check cloud-entry.mjs && node build-smoke.mjs",
+    "start": "node server.js",
+    "local": "node service-manager.mjs",
+    "cloud": "node server.js",
+    "ems": "node ems-server.mjs",
+    "test": "node --test test.mjs ems.test.mjs relay.test.mjs cloud.test.mjs connection-intelligence.test.mjs",
+    "relay": "node relay.mjs",
+    "ocpp-test": "node server.mjs"
+  },
+  "dependencies": {
+    "basic-ftp": "^5.2.1",
+    "express": "4.21.2",
+    "ws": "8.18.3"
+  }
 }
