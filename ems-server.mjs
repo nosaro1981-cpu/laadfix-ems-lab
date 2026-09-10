@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createEngine } from './ems.mjs';
 import { createRecoveryMonitor } from './power-recovery.mjs';
 import { connectionIntelligence, analyzeControllerLog } from './connection-intelligence.mjs';
@@ -80,6 +80,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   let statusSimulation=null;
   let connectionSamples=[],logAnalysis=null;
   let liveControl=false,lastSentLimit=null,lastControlError=null,lastControlResult=null,capabilities=null,serviceResult=null,networkResult=null,lastMeterRequest=0,meterRequestResult=null,statusRequestedForConnection=null;
+  const diagnosticTokens=new Map(),diagnosticReports=new Map();
   const pythonExe='C:\\Users\\melgh\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe';
   const friendlyLedError=value=>{
     const message=String(value?.message||value||'').trim();
@@ -136,6 +137,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const allowedHosts=['127.0.0.1:'+server.address().port,'localhost:'+server.address().port];if(publicName)allowedHosts.push(publicName);
     if (!allowedHosts.includes(req.headers.host)) return send(403,{error:'Onbekende host'});
     const requestPath=new URL(req.url,'http://localhost').pathname;
+    if(requestPath.startsWith('/api/diagnostics-upload/')){
+      if(!['PUT','POST'].includes(req.method)){res.writeHead(405,{'Allow':'PUT, POST'});res.end();return;}
+      const parts=requestPath.slice('/api/diagnostics-upload/'.length).split('/'),token=parts.shift()||'';let chargerId='';try{chargerId=decodeURIComponent(parts.join('/'));}catch{return send(400,{error:'Ongeldig laadstation-ID'});}
+      const ticket=diagnosticTokens.get(token);if(!ticket||ticket.chargerId!==chargerId||ticket.expiresAt<Date.now())return send(403,{error:'Uploadadres is ongeldig of verlopen'});
+      try{const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>5*1024*1024)throw Error('Diagnosebestand is groter dan 5 MB');chunks.push(chunk);}const text=Buffer.concat(chunks).toString('utf8'),analysis=analyzeControllerLog(text.slice(-250000)),item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId),meterSetting=item?.configuration?.find(row=>row.key==='chg_KWH1')?.value||null;const meterParts=meterSetting?meterSetting.split(','):[];const report={chargerId,status:'Ontvangen',requestedAt:ticket.requestedAt,receivedAt:new Date().toISOString(),fileName:ticket.fileName||null,bytes,controllerStatus:item?.diagnosticsStatus||null,meterConfiguration:meterSetting?{raw:meterSetting,type:meterParts[0]||null,address:meterParts[1]||null,baudrate:meterParts[2]||null,parity:meterParts[3]||null,stopBits:meterParts[4]||null}:null,analysis,excerpt:text.slice(-20000)};diagnosticReports.set(chargerId,report);diagnosticTokens.delete(token);res.writeHead(201,{'Content-Type':'text/plain; charset=utf-8'});res.end('Diagnosebestand ontvangen');return;}catch(e){return send(400,{error:e.message});}
+    }
     if(['GET','HEAD'].includes(req.method)&&requestPath.startsWith('/render-source.git/')){
       const relative=decodeURIComponent(requestPath.slice('/render-source.git/'.length));
       if(!relative||relative.includes('..')||relative.includes('\\')||!/^[A-Za-z0-9._\/-]+$/.test(relative)){res.writeHead(404);res.end();return;}
@@ -157,9 +164,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(req.method==='GET'&&req.url==='/logout'){res.writeHead(303,{'Location':'/login','Set-Cookie':'laadfix_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});res.end();return;}
       if(!loggedIn){if(req.url?.startsWith('/api/'))return send(401,{error:'Inloggen vereist'});res.writeHead(303,{'Location':'/login'});res.end();return;}
     }
-    if(req.method==='GET'&&req.url==='/api/state')return send(200,{...state,diagnostic,charger,meter:{...extractMeterReadings(charger.meterValues,charger.lastMeterValues),forwardedAt:charger.lastMeterForwarded||null,historyCount:charger.meterHistoryCount||0,lastRequest:lastMeterRequest?new Date(lastMeterRequest).toISOString():null,requestResult:meterRequestResult},led,service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),serviceResult,networkResult,control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities}});
+    if(req.method==='GET'&&req.url==='/api/state')return send(200,{...state,diagnostic,charger,meter:{...extractMeterReadings(charger.meterValues,charger.lastMeterValues),forwardedAt:charger.lastMeterForwarded||null,historyCount:charger.meterHistoryCount||0,lastRequest:lastMeterRequest?new Date(lastMeterRequest).toISOString():null,requestResult:meterRequestResult},led,service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,diagnostics:Object.fromEntries(diagnosticReports),powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),serviceResult,networkResult,control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities}});
     if(req.method==='GET'&&req.url==='/api/support-bundle'){
-      const bundle={createdAt:new Date().toISOString(),application:'Ecotap serviceconsole',service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),network:networkResult,charger:{...charger,events:charger.events?.slice(0,60)},ems:{settings:state.settings,result:state.result},control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities},serviceResult};
+      const bundle={createdAt:new Date().toISOString(),application:'Ecotap serviceconsole',service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,diagnostics:Object.fromEntries(diagnosticReports),powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),network:networkResult,charger:{...charger,events:charger.events?.slice(0,60)},ems:{settings:state.settings,result:state.result},control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities},serviceResult};
       res.writeHead(200,{'Content-Type':'application/json','Content-Disposition':`attachment; filename="ecotap-diagnose-${Date.now()}.json"`});res.end(JSON.stringify(bundle,null,2));return;
     }
     if(req.method==='GET'&&files.has(req.url)){const [file,type]=files.get(req.url);res.writeHead(200,{'Content-Type':type});res.end(readFileSync(new URL(file,import.meta.url)));return;}
@@ -187,6 +194,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(action==='changeConfiguration'&&!/^[A-Za-z0-9_.:-]{1,100}$/.test(configKey))throw Error('Ongeldige configuratiesleutel');
         if(action==='changeConfiguration'&&configValue.length>1000)throw Error('Configuratiewaarde is te lang');
         const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
+        let diagnosticToken=null,diagnosticLocation=null;
+        if(action==='diagnostics'){
+          if(!publicName)throw Error('Voor diagnose-upload is een openbaar dashboardadres nodig');
+          diagnosticToken=randomBytes(24).toString('hex');diagnosticLocation=`https://${publicName}/api/diagnostics-upload/${diagnosticToken}/${encodeURIComponent(chargerId)}`;
+          const requestedAt=new Date().toISOString();diagnosticTokens.set(diagnosticToken,{chargerId,requestedAt,expiresAt:Date.now()+15*60_000,fileName:null});diagnosticReports.set(chargerId,{chargerId,status:'Aangevraagd',requestedAt,locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+        }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
           meterValues:['TriggerMessage',{requestedMessage:'MeterValues',connectorId:1}],
@@ -198,13 +211,14 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           remoteStart:['RemoteStartTransaction',{connectorId:1,idTag:String(body.idTag||'LAADFIX').slice(0,20)}],
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
-          changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}]
+          changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
+          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:1,retryInterval:30}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
         if(action==='remoteStart'&&active)throw Error('Er loopt al een laadsessie');
         if(action==='remoteStop'&&!Number.isInteger(commands[action][1].transactionId))throw Error('Geen actief transactie-ID beschikbaar');
-        busy=true;try{const [ocppAction,payload]=commands[action],result=await fleetCommander(chargerId,ocppAction,payload);serviceResult={action,status:'Remote actie verzonden',steps:[`${chargerId}: ${ocppAction}`,`Homebox antwoord: ${result?.status||'ontvangen'}`],result,time:new Date().toISOString()};return send(200,{serviceResult,result});}finally{busy=false;}
+        busy=true;try{const [ocppAction,payload]=commands[action],result=await fleetCommander(chargerId,ocppAction,payload);if(action==='diagnostics'){const ticket=diagnosticTokens.get(diagnosticToken);if(ticket)ticket.fileName=result?.fileName||null;diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),status:result?.fileName?'Upload verwacht':'Opdracht geaccepteerd',fileName:result?.fileName||null,controllerResponse:result});}serviceResult={action,status:'Remote actie verzonden',steps:[`${chargerId}: ${ocppAction}`,`Homebox antwoord: ${result?.status||result?.fileName||'ontvangen'}`],result,time:new Date().toISOString()};return send(200,{serviceResult,result});}catch(error){if(diagnosticToken){diagnosticTokens.delete(diagnosticToken);diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),status:'Mislukt',error:error.message});}throw error;}finally{busy=false;}
       }
       if(req.url==='/api/settings'){engine.set(body);state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/reset'){engine.reset();state=engine.tick();return send(200,{...state,diagnostic});}
