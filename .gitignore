@@ -1,0 +1,4 @@
+node_modules/
+data/*.ndjson
+data/*.json
+

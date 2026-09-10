@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: laadfix-ems-lab
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: OCPP_ID
+        value: RBC-0000032
+      - key: OCPP_UPSTREAM
+        value: ws://ocpp.robo-charge.net:80/RBC-0000032
+      - key: OCPP_PATH_SECRET
+        sync: false
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
