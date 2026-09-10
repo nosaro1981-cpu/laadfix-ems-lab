@@ -46,13 +46,13 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
       if(m[2]==='StopTransaction'){state.activeTransaction=false;state.transactionId=null;}
     }catch{log('Onleesbaar bericht','Ongewijzigd doorgestuurd');}
   }
-  function localCommand(action,payload,timeout=8000){
+  function localCommand(action,payload,timeout=action==='GetConfiguration'?30000:8000){
     if(!active||active.down.readyState!==WebSocket.OPEN)throw Error('Homebox is niet verbonden');
     if(!['GetConfiguration','ChangeConfiguration','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability','RemoteStartTransaction','RemoteStopTransaction','ClearCache'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
     const uid='ems-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
     const started=new Date().toISOString();state.lastLocalCommand={action,status:'Verzonden',started};log('Lokaal → Homebox',action);
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pending.delete(uid);state.lastLocalCommand={action,status:'Timeout',started,finished:new Date().toISOString()};reject(Error('Geen antwoord van de Homebox binnen 8 seconden'));},timeout);timer.unref();
+      const timer=setTimeout(()=>{pending.delete(uid);state.lastLocalCommand={action,status:'Timeout',started,finished:new Date().toISOString()};reject(Error(`Geen antwoord van de Homebox binnen ${Math.round(timeout/1000)} seconden`));},timeout);timer.unref();
       pending.set(uid,{action,payload,started,timer,resolve,reject});
       active.down.send(JSON.stringify([2,uid,action,payload]),{binary:false},err=>{if(err){clearTimeout(timer);pending.delete(uid);reject(err);}});
     });
