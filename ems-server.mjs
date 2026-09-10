@@ -68,7 +68,7 @@ export async function networkDiagnostics(){
   const homebox=await tcpCheck('192.168.1.168',80,1200);
   return {started,dns,backend,homebox:{...homebox,note:homebox.ok?'HTTP-poort bereikbaar':'Geen HTTP-poort; het apparaat kan nog wel via OCPP uitgaand verbinden'}};
 }
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -96,7 +96,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(!response.ok)throw Error('status niet beschikbaar');
       const relay=await response.json(), connector=relay.connectors?.['1']||relay.connectors?.[1];
       charger={...charger,relayReachable:true,chargerConnected:!!relay.chargerConnected,backendConnected:!!relay.backendConnected,status:connector?.status||'Onbekend',errorCode:connector?.errorCode||null,lastSeen:relay.lastSeen||null,lastHeartbeat:relay.lastHeartbeat||null,lastStatusNotification:relay.lastStatusNotification||null,lastMeterValues:relay.lastMeterValues||null,lastMeterForwarded:relay.lastMeterForwarded||null,meterHistoryCount:relay.meterHistoryCount||0,meterHistory:Array.isArray(relay.meterHistory)?relay.meterHistory:[],meterValues:relay.meterValues||null,upstream:relay.upstream||null,connectedAt:relay.connectedAt||null,backendConnectedAt:relay.backendConnectedAt||null,activeTransaction:!!relay.activeTransaction,boot:relay.boot||null,id:relay.id||charger.id,forwarded:relay.forwarded||0,received:relay.received||0,events:Array.isArray(relay.events)?relay.events.slice(0,20):[],relayError:relay.error||null,lastLocalCommand:relay.lastLocalCommand||null};
-      charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;
+      charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;charger.fleet=typeof fleetProvider==='function'?fleetProvider():[{id:charger.id,chargerConnected:charger.chargerConnected,backendConnected:charger.backendConnected,status:charger.status,errorCode:charger.errorCode,lastSeen:charger.lastSeen,forwarded:charger.forwarded,received:charger.received,upstream:charger.upstream,error:charger.relayError}];
     }catch{charger={...charger,relayReachable:false,chargerConnected:false,backendConnected:false,status:'Offline',relayError:'Lokale OCPP-tussenserver niet bereikbaar'};}
     charger.simulatedStatus=statusSimulation;
     charger.effectiveStatus=statusSimulation||charger.status;
@@ -170,6 +170,11 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>260000)throw Error('Aanvraag te groot');}
       const body=JSON.parse(raw);
       if(req.url==='/api/analyze-log'){logAnalysis=analyzeControllerLog(body.log);return send(200,{logAnalysis});}
+      if(req.url==='/api/fleet-routing'){
+        if(typeof fleetRouteChanger!=='function')throw Error('Vlootroutering is alleen online beschikbaar');
+        const result=await fleetRouteChanger(String(body.id||''),String(body.upstream||''));
+        await refreshHardware();return send(200,{result,fleet:charger.fleet});
+      }
       if(req.url==='/api/settings'){engine.set(body);state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/reset'){engine.reset();state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/control'){

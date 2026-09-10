@@ -66,7 +66,9 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     const remote=socket.remoteAddress?.replace(/^::ffff:/,'');
     const expectedPath='/ocpp/'+(pathSecret?encodeURIComponent(pathSecret)+'/':'')+encodeURIComponent(id);
     if((allowedIp!=='*'&&remote!==allowedIp)||req.url!==expectedPath||!(req.headers['sec-websocket-protocol']||'').split(',').map(s=>s.trim()).includes('ocpp1.6')){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
-    if(active){socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n');return;}
+    // A controller can reconnect before the previous TCP close has propagated.
+    // The newest authenticated session wins, avoiding a retry loop on 409.
+    if(active){active.up.terminate();active.down.terminate();active=null;}
     wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));
   });
   wss.on('connection',(down,req)=>{
