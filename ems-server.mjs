@@ -217,7 +217,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
-          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:1,retryInterval:30}]
+          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:new Date(Date.now()-24*60*60_000).toISOString(),stopTime:new Date().toISOString()}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
