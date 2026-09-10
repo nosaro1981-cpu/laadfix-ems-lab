@@ -27,7 +27,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
   const summary=(payload,time,messageId)=>{const samples=(payload?.meterValue||[]).flatMap(v=>v.sampledValue||[]),find=(m,phase)=>{const v=samples.find(x=>(x.measurand||'Energy.Active.Import.Register')===m&&(!phase||x.phase===phase));return v?{value:Number(v.value),unit:v.unit||'',phase:v.phase||null}:null;};return {messageId,time,energy:find('Energy.Active.Import.Register'),voltageL1:find('Voltage','L1'),currentL1:find('Current.Import','L1'),frequency:find('Frequency'),temperature:find('Temperature'),forwardedAt:null};};
   let archivedMeter=null,archivedForward=null,meterHistoryCount=0,meterHistory=[];
   if(meterLogUrl&&existsSync(meterLogUrl)){try{for(const line of readFileSync(meterLogUrl,'utf8').trim().split(/\r?\n/)){if(!line)continue;const item=JSON.parse(line);if(item.event==='received'){archivedMeter=item;meterHistoryCount++;meterHistory.unshift(summary(item.payload,item.time,item.messageId));meterHistory=meterHistory.slice(0,20);}if(item.event==='forwarded'){archivedForward=item;const row=meterHistory.find(x=>x.messageId===item.messageId);if(row)row.forwardedAt=item.time;}}}catch{}}
-  const state={chargerConnected:false,backendConnected:false,id,upstream:currentUpstream,received:0,forwarded:0,lastSeen:null,lastHeartbeat:null,lastStatusNotification:null,lastMeterValues:archivedMeter?.time||null,lastMeterForwarded:archivedForward?.time||null,lastMeterMessageId:archivedMeter?.messageId||null,meterHistoryCount,meterHistory,connectedAt:null,backendConnectedAt:null,activeTransaction:false,boot:null,connectors:{},meterValues:archivedMeter?.payload||null,events:[],error:null,lastLocalCommand:null,roundTrips:[],connectionStats:{sessions:0,disconnects:0,backendErrors:0,chargerErrors:0,lastDisconnect:null,queuedMessages:0}};
+  const state={chargerConnected:false,backendConnected:false,id,upstream:currentUpstream,received:0,forwarded:0,lastSeen:null,lastHeartbeat:null,lastStatusNotification:null,lastMeterValues:archivedMeter?.time||null,lastMeterForwarded:archivedForward?.time||null,lastMeterMessageId:archivedMeter?.messageId||null,meterHistoryCount,meterHistory,connectedAt:null,backendConnectedAt:null,activeTransaction:false,transactionId:null,boot:null,connectors:{},meterValues:archivedMeter?.payload||null,events:[],error:null,lastLocalCommand:null,roundTrips:[],connectionStats:{sessions:0,disconnects:0,backendErrors:0,chargerErrors:0,lastDisconnect:null,queuedMessages:0}};
   const recordMeter=item=>{if(!meterLogUrl)return;try{appendFileSync(meterLogUrl,JSON.stringify(item)+'\n');}catch(e){state.error='Meterarchief: '+e.message;}};
   const log=(action,detail='')=>{state.events.unshift({time:new Date().toISOString(),action,detail});state.events.splice(60);};
   function observe(raw,direction){
@@ -35,7 +35,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     try{const m=JSON.parse(raw);if(!Array.isArray(m))return;
       const action=m[0]===2?m[2]:m[0]===3?'Antwoord':'Foutantwoord';log(direction+' · '+action);
       if(direction==='Homebox'&&m[0]===2)roundTripPending.set(m[1],{time:Date.now(),action:m[2]});
-      if(direction==='Robo Charge'&&[3,4].includes(m[0])){const sent=roundTripPending.get(m[1]);if(sent){roundTripPending.delete(m[1]);state.roundTrips.unshift({time:new Date().toISOString(),action:sent.action,ms:Date.now()-sent.time,ok:m[0]===3});state.roundTrips=state.roundTrips.slice(0,120);}}
+      if(direction==='Robo Charge'&&[3,4].includes(m[0])){const sent=roundTripPending.get(m[1]);if(sent){roundTripPending.delete(m[1]);if(sent.action==='StartTransaction'&&m[0]===3&&Number.isInteger(m[2]?.transactionId))state.transactionId=m[2].transactionId;state.roundTrips.unshift({time:new Date().toISOString(),action:sent.action,ms:Date.now()-sent.time,ok:m[0]===3});state.roundTrips=state.roundTrips.slice(0,120);}}
       if(direction!=='Homebox' || m[0]!==2)return;
       const p=m[3];if(!p||typeof p!=='object')return;
       if(m[2]==='BootNotification')state.boot={vendor:p.chargePointVendor,model:p.chargePointModel,firmware:p.firmwareVersion};
@@ -43,12 +43,12 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
       if(m[2]==='StatusNotification'&&Number.isInteger(p.connectorId)&&p.connectorId>=0&&p.connectorId<100){state.lastStatusNotification=state.lastSeen;state.connectors[p.connectorId]={status:p.status,errorCode:p.errorCode,time:state.lastSeen};}
       if(m[2]==='MeterValues'){state.lastMeterValues=state.lastSeen;state.lastMeterMessageId=m[1];state.meterHistoryCount++;state.meterValues={connectorId:p.connectorId,transactionId:p.transactionId??null,meterValue:p.meterValue,time:state.lastSeen};state.meterHistory.unshift(summary(state.meterValues,state.lastSeen,m[1]));state.meterHistory=state.meterHistory.slice(0,20);recordMeter({event:'received',time:state.lastSeen,messageId:m[1],payload:state.meterValues});}
       if(m[2]==='StartTransaction')state.activeTransaction=true;
-      if(m[2]==='StopTransaction')state.activeTransaction=false;
+      if(m[2]==='StopTransaction'){state.activeTransaction=false;state.transactionId=null;}
     }catch{log('Onleesbaar bericht','Ongewijzigd doorgestuurd');}
   }
   function localCommand(action,payload,timeout=8000){
     if(!active||active.down.readyState!==WebSocket.OPEN)throw Error('Homebox is niet verbonden');
-    if(!['GetConfiguration','ChangeConfiguration','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
+    if(!['GetConfiguration','ChangeConfiguration','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability','RemoteStartTransaction','RemoteStopTransaction','ClearCache'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
     const uid='ems-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
     const started=new Date().toISOString();state.lastLocalCommand={action,status:'Verzonden',started};log('Lokaal → Homebox',action);
     return new Promise((resolve,reject)=>{

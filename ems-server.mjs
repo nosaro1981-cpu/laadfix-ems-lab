@@ -68,7 +68,7 @@ export async function networkDiagnostics(){
   const homebox=await tcpCheck('192.168.1.168',80,1200);
   return {started,dns,backend,homebox:{...homebox,note:homebox.ok?'HTTP-poort bereikbaar':'Geen HTTP-poort; het apparaat kan nog wel via OCPP uitgaand verbinden'}};
 }
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null,fleetCommander=null}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -174,6 +174,30 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(typeof fleetRouteChanger!=='function')throw Error('Vlootroutering is alleen online beschikbaar');
         const result=await fleetRouteChanger(String(body.id||''),String(body.upstream||''));
         await refreshHardware();return send(200,{result,fleet:charger.fleet});
+      }
+      if(req.url==='/api/fleet-command'){
+        if(typeof fleetCommander!=='function')throw Error('Vlootbediening is alleen online beschikbaar');
+        if(busy)return send(429,{error:'Er loopt al een opdracht'});
+        const chargerId=String(body.id||''),item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);
+        if(!item?.chargerConnected)throw Error('Laadstation is niet via OCPP verbonden');
+        const active=!!item.activeTransaction||['Charging','Preparing','Finishing'].includes(item.status);
+        const action=String(body.action||'');
+        const commands={
+          status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
+          meterValues:['TriggerMessage',{requestedMessage:'MeterValues',connectorId:1}],
+          configuration:['GetConfiguration',{key:['HeartbeatInterval','ConnectionTimeOut','MeterValueSampleInterval','ClockAlignedDataInterval','SupportedFeatureProfiles']}],
+          softReset:['Reset',{type:'Soft'}],hardReset:['Reset',{type:'Hard'}],
+          unlock:['UnlockConnector',{connectorId:1}],operative:['ChangeAvailability',{connectorId:1,type:'Operative'}],
+          inoperative:['ChangeAvailability',{connectorId:1,type:'Inoperative'}],clearCache:['ClearCache',{}],
+          clearProfile:['ClearChargingProfile',{connectorId:1,chargingProfilePurpose:'TxDefaultProfile'}],
+          remoteStart:['RemoteStartTransaction',{connectorId:1,idTag:String(body.idTag||'LAADFIX').slice(0,20)}],
+          remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}]
+        };
+        if(!commands[action])throw Error('Onbekende remote actie');
+        if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
+        if(action==='remoteStart'&&active)throw Error('Er loopt al een laadsessie');
+        if(action==='remoteStop'&&!Number.isInteger(commands[action][1].transactionId))throw Error('Geen actief transactie-ID beschikbaar');
+        busy=true;try{const [ocppAction,payload]=commands[action],result=await fleetCommander(chargerId,ocppAction,payload);serviceResult={action,status:'Remote actie verzonden',steps:[`${chargerId}: ${ocppAction}`,`Homebox antwoord: ${result?.status||'ontvangen'}`],result,time:new Date().toISOString()};return send(200,{serviceResult,result});}finally{busy=false;}
       }
       if(req.url==='/api/settings'){engine.set(body);state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/reset'){engine.reset();state=engine.tick();return send(200,{...state,diagnostic});}

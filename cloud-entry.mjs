@@ -19,13 +19,19 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
     relays.set(chargerId,promise);
     try{const app=await promise;relays.set(chargerId,app);return app;}catch(error){relays.delete(chargerId);throw error;}
   }
-  const fleetState=()=>Array.from(relays.entries()).flatMap(([chargerId,value])=>value?.state?[{id:chargerId,chargerConnected:value.state.chargerConnected,backendConnected:value.state.backendConnected,status:value.state.connectors?.[1]?.status||'Onbekend',errorCode:value.state.connectors?.[1]?.errorCode||null,lastSeen:value.state.lastSeen,forwarded:value.state.forwarded,received:value.state.received,upstream:value.state.upstream,error:value.state.error}]:[]);
+  const fleetState=()=>Array.from(relays.entries()).flatMap(([chargerId,value])=>value?.state?[{id:chargerId,chargerConnected:value.state.chargerConnected,backendConnected:value.state.backendConnected,status:value.state.connectors?.[1]?.status||'Onbekend',errorCode:value.state.connectors?.[1]?.errorCode||null,lastSeen:value.state.lastSeen,lastHeartbeat:value.state.lastHeartbeat,forwarded:value.state.forwarded,received:value.state.received,upstream:value.state.upstream,error:value.state.error,boot:value.state.boot,connectors:value.state.connectors,meterValues:value.state.meterValues,meterHistory:value.state.meterHistory,events:value.state.events?.slice(0,30),activeTransaction:value.state.activeTransaction,transactionId:value.state.transactionId,lastLocalCommand:value.state.lastLocalCommand}]:[]);
   async function changeFleetRoute(chargerId,nextUpstream){
     if(!validId(chargerId))throw Error('Ongeldige OCPP-ID');
     const chargerRelay=await getRelay(chargerId);
     if(chargerRelay.state.activeTransaction)throw Error('Bestemming wijzigen is geblokkeerd tijdens een actieve laadsessie');
     const response=await fetch(`http://127.0.0.1:${chargerRelay.monitorPort}/api/routing`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upstream:nextUpstream})});
     const result=await response.json();if(!response.ok)throw Error(result.error||'Bestemming wijzigen mislukt');return {id:chargerId,...result};
+  }
+  async function fleetCommand(chargerId,action,payload){
+    if(!validId(chargerId))throw Error('Ongeldige OCPP-ID');
+    const chargerRelay=await getRelay(chargerId);
+    const response=await fetch(`http://127.0.0.1:${chargerRelay.monitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload})});
+    const result=await response.json();if(!response.ok)throw Error(result.error||'OCPP-opdracht mislukt');return result.result;
   }
   const gateway=http.createServer((req,res)=>{
     if(req.url==='/healthz'){res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({ok:true,ready:!!ems}));return;}
@@ -49,7 +55,7 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   await listen(gateway,port,host);
   try{
     relay=await getRelay(id);
-    ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRouteChanger:changeFleetRoute});
+    ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRouteChanger:changeFleetRoute,fleetCommander:fleetCommand});
   }catch(error){if(ems)await ems.close();if(relay)await relay.close();await new Promise(resolve=>gateway.close(resolve));throw error;}
   return {port:gateway.address().port,relay,ems,relays,close:async()=>{await new Promise(resolve=>gateway.close(resolve));await ems.close();for(const value of relays.values()){try{await (await value).close();}catch{}}}};
 }
