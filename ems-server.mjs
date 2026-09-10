@@ -182,6 +182,11 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(!item?.chargerConnected)throw Error('Laadstation is niet via OCPP verbonden');
         const active=!!item.activeTransaction||['Charging','Preparing','Finishing'].includes(item.status);
         const action=String(body.action||'');
+        const configKey=String(body.key||'');
+        const configValue=String(body.value??'');
+        if(action==='changeConfiguration'&&!/^[A-Za-z0-9_.:-]{1,100}$/.test(configKey))throw Error('Ongeldige configuratiesleutel');
+        if(action==='changeConfiguration'&&configValue.length>1000)throw Error('Configuratiewaarde is te lang');
+        const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
           meterValues:['TriggerMessage',{requestedMessage:'MeterValues',connectorId:1}],
@@ -191,7 +196,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           inoperative:['ChangeAvailability',{connectorId:1,type:'Inoperative'}],clearCache:['ClearCache',{}],
           clearProfile:['ClearChargingProfile',{connectorId:1,chargingProfilePurpose:'TxDefaultProfile'}],
           remoteStart:['RemoteStartTransaction',{connectorId:1,idTag:String(body.idTag||'LAADFIX').slice(0,20)}],
-          remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}]
+          remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
+          getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
+          changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
