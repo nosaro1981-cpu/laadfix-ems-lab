@@ -48,3 +48,23 @@ export function analyzeControllerLog(text){
   const score=Math.max(0,100-findings.reduce((sum,item)=>sum+(item.level==='critical'?28:item.level==='warning'?12:0),0));
   return {score,stats,findings,analyzedAt:new Date().toISOString()};
 }
+
+const canonicalMeter=value=>{
+  const text=String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const match=text.match(/SDM(?:72D|630|230|120)/);
+  return match?.[0]||null;
+};
+
+export function assessMeterIdentity(text,meterSetting,analysis=null){
+  const configured=canonicalMeter(String(meterSetting||'').split(',')[0]);
+  const observed=[...new Set([...String(text||'').matchAll(/\bSDM(?:72D|630|230|120)\b/gi)].map(match=>canonicalMeter(match[0])).filter(Boolean))];
+  const mismatch=!!configured&&observed.length>0&&!observed.includes(configured);
+  const confirmed=!!configured&&observed.includes(configured);
+  const timeouts=Number(analysis?.stats?.meterTimeouts||0);
+  let level='warning',label='Niet bevestigd',detail='Het ingestelde metertype is bekend, maar de controllerlog noemt het fysieke metermodel niet.';
+  if(!configured){label='Geen meterconfiguratie';detail='chg_KWH1 ontbreekt of bevat geen herkenbaar Eastron-model.';}
+  if(confirmed){level='ok';label='Model bevestigd';detail=`De controllerlog noemt ${configured}; dit komt overeen met chg_KWH1.`;}
+  if(mismatch){level='critical';label='Model komt niet overeen';detail=`Ingesteld: ${configured}. In de controllerlog waargenomen: ${observed.join(', ')}.`;}
+  if(!observed.length&&timeouts){detail+=` Er zijn daarnaast ${timeouts} Modbus time-out${timeouts===1?'':'s'}, dus controleer model, adres en businstellingen op locatie.`;}
+  return {configured,observed,confirmed,mismatch,level,label,detail};
+}

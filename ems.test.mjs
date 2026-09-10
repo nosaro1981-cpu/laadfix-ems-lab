@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine} from './ems.mjs';
+import {assessMeterIdentity} from './connection-intelligence.mjs';
 import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
@@ -82,7 +83,15 @@ test('GetDiagnostics ontvangt en analyseert een controllerbestand zonder dashboa
  const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{command={id,action,payload};return{fileName:'controller.log'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
  try{
   let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAG-1',action:'diagnostics'})});assert.equal(response.status,200);assert.equal(command.action,'GetDiagnostics');
-  const uploadPath=new URL(command.payload.location).pathname;response=await fetch(base+uploadPath,{method:'PUT',body:'MODBUS Thread active\nKWH:AD[1]RG[FC00]REC[9,9]ERR[TO]\n'});assert.equal(response.status,201);
-  response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});const state=await response.json(),report=state.diagnostics['DIAG-1'];assert.equal(report.status,'Ontvangen');assert.equal(report.analysis.stats.meterTimeouts,1);assert.equal(report.meterConfiguration.type,'EASTR_SDM72D');assert.equal(report.meterConfiguration.address,'1');
+  const uploadPath=new URL(command.payload.location).pathname;response=await fetch(base+uploadPath,{method:'PUT',body:'MODBUS Thread active\nMeter detected: SDM630\nKWH:AD[1]RG[FC00]REC[9,9]ERR[TO]\n'});assert.equal(response.status,201);
+  response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});const state=await response.json(),report=state.diagnostics['DIAG-1'];assert.equal(report.status,'Ontvangen');assert.equal(report.analysis.stats.meterTimeouts,1);assert.equal(report.meterConfiguration.type,'EASTR_SDM72D');assert.equal(report.meterConfiguration.address,'1');assert.equal(report.meterAssessment.configured,'SDM72D');assert.deepEqual(report.meterAssessment.observed,['SDM630']);assert.equal(report.meterAssessment.mismatch,true);
  }finally{await app.close();}
+});
+
+test('Meteridentiteit maakt geen modelgok bij alleen Modbus time-outs',()=>{
+ const analysis={stats:{meterTimeouts:4}};
+ const unknown=assessMeterIdentity('KWH:AD[1]ERR[TO]','EASTR_SDM72D,1,9600,N,1',analysis);
+ assert.equal(unknown.configured,'SDM72D');assert.deepEqual(unknown.observed,[]);assert.equal(unknown.mismatch,false);assert.equal(unknown.label,'Niet bevestigd');
+ const confirmed=assessMeterIdentity('KWH meter SDM72D ready','EASTR_SDM72D,1,9600,N,1',analysis);
+ assert.equal(confirmed.confirmed,true);assert.equal(confirmed.level,'ok');
 });
