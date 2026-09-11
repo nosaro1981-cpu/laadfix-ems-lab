@@ -68,3 +68,25 @@ export function assessMeterIdentity(text,meterSetting,analysis=null){
   if(!observed.length&&timeouts){detail+=` Er zijn daarnaast ${timeouts} Modbus time-out${timeouts===1?'':'s'}, dus controleer model, adres en businstellingen op locatie.`;}
   return {configured,observed,confirmed,mismatch,level,label,detail};
 }
+
+const lastMatch=(text,patterns)=>{
+  for(const pattern of patterns){const matches=[...String(text||'').matchAll(pattern)];if(matches.length)return matches.at(-1)[1]?.trim()||null;}
+  return null;
+};
+
+export function extractCellularIdentity(text){
+  const source=String(text||'');
+  const registrationCode=lastMatch(source,[/GSM\s+REG\s*:\s*(\d+)/gi,/NETWORK[_ ]REGISTRATION[^\r\n]*?(\d+)/gi]);
+  const registration={'0':'Niet geregistreerd','1':'Geregistreerd op thuisnetwerk','2':'Netwerk zoeken','3':'Registratie geweigerd','4':'Status onbekend','5':'Geregistreerd via roaming'}[registrationCode]||null;
+  return {
+    modem:lastMatch(source,[/GSM\s+Modem\s*:\s*([^\r\n]+)/gi,/gsm_Model[^\r\n:=]*[:=]\s*([^,;\r\n]+)/gi]),
+    imei:lastMatch(source,[/\bIMEI\s*[:=]?\s*\[?([0-9]{14,17})\]?/gi]),
+    imsi:lastMatch(source,[/\bIMSI\s*[:=]?\s*\[?([0-9]{14,16})\]?/gi]),
+    iccid:lastMatch(source,[/\b(?:ICCID|CCID)\s*[:=]?\s*\[?([0-9]{18,22})\]?/gi]),
+    operator:lastMatch(source,[/\bgsm_Oper\s*[:=]\s*([0-9]{5,6})/gi]),
+    signal:lastMatch(source,[/\b(?:SQ|CSQ)\s*[:=]\s*(\d{1,2})/gi,/\bgsm_SigQ\s*[:=]\s*(\d{1,2})/gi]),
+    registrationCode,
+    registration,
+    registered:registrationCode==='1'||registrationCode==='5'||/NETWORK[_ ]REGISTRATION\s+DONE/i.test(source),
+  };
+}
