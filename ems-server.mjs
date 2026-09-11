@@ -12,6 +12,7 @@ import { createEngine } from './ems.mjs';
 import { createRecoveryMonitor } from './power-recovery.mjs';
 import { connectionIntelligence, analyzeControllerLog, assessMeterIdentity } from './connection-intelligence.mjs';
 import { auditStation } from './station-watchdog.mjs';
+import { createRecoveryCenter, recoveryGuard, connectorIds } from './recovery-center.mjs';
 
 export function privateIPv4(ip) {
   if (net.isIP(ip) !== 4) return false;
@@ -71,6 +72,17 @@ export async function networkDiagnostics(){
   const homebox=await tcpCheck('192.168.1.168',80,1200);
   return {started,dns,backend,homebox:{...homebox,note:homebox.ok?'HTTP-poort bereikbaar':'Geen HTTP-poort; het apparaat kan nog wel via OCPP uitgaand verbinden'}};
 }
+export async function recoveryNetworkDiagnostics(station) {
+  let url;
+  try { url = new URL(station.upstream); } catch { return { ok: false, lines: ['Geen geldige backofficebestemming bekend.'] }; }
+  if (!['ws:', 'wss:'].includes(url.protocol)) return { ok: false, lines: ['Backofficebestemming is geen WebSocket-adres.'] };
+  const host = url.hostname, port = Number(url.port || (url.protocol === 'wss:' ? 443 : 80)), lines = [];
+  let dnsOk = false;
+  try { const result = await Promise.race([lookup(host), new Promise((_, reject) => { const t = setTimeout(() => reject(Error('DNS-timeout')), 4000); t.unref(); })]); dnsOk = true; lines.push(`DNS: ${result.address}`); } catch (e) { lines.push(`DNS mislukt: ${e.code || e.message}`); }
+  const tcp = dnsOk ? await tcpCheck(host, port) : { ok: false, detail: 'Niet getest omdat DNS niet is opgelost' };
+  lines.push(`Serverpoort: ${tcp.ok ? 'bereikbaar' : tcp.detail}`, 'Test uitgevoerd vanaf de proxy. Een open serverpoort bewijst geen geslaagde OCPP-aanmelding of bereikbaarheid vanaf de laadlocatie.');
+  return { host, port, ok: dnsOk && tcp.ok, lines };
+}
 export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null,fleetCommander=null}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
@@ -86,6 +98,29 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const watchdogRequested=new Set();
   const diagnosticTokens=new Map(),diagnosticReports=new Map();
   const diagnosticFtpUrl=String(process.env.DIAGNOSTICS_FTP_URL||'').trim();
+  const recoveryStations = () => typeof fleetProvider === 'function' ? fleetProvider() : [charger];
+  const recoveryStation = id => recoveryStations().find(item => item.id === id);
+  const stationCommand = (id, action, payload) => typeof fleetCommander === 'function' ? fleetCommander(id, action, payload) : id === charger.id ? relayCommand(action, payload) : Promise.reject(Error('Onbekend laadstation'));
+  const requestShortDiagnostics = async (chargerId, minutes = 5) => {
+    if (!publicName && !diagnosticFtpUrl) throw Error('Er is geen bereikbaar uploadadres ingesteld. Gebruik Robo Charge of configureer de diagnose-ontvanger.');
+    const existing = diagnosticReports.get(chargerId);
+    if (existing && !['Ontvangen', 'Mislukt'].includes(existing.status) && Date.now() - Date.parse(existing.requestedAt) < 15 * 60000) throw Error('Er wordt al een diagnose-upload gevolgd. Bekijk eerst de uploadstatus.');
+    const token = randomBytes(24).toString('hex'), requestedAt = new Date().toISOString();
+    const ticket = { chargerId, requestedAt, expiresAt: Date.now() + 15 * 60000, fileName: null };
+    diagnosticTokens.set(token, ticket);
+    diagnosticReports.set(chargerId, { chargerId, status: 'Aangevraagd', requestedAt, minutes, locationReady: true });
+    try {
+      const result = await stationCommand(chargerId, 'GetDiagnostics', { location: diagnosticFtpUrl || `https://${publicName}/api/diagnostics-upload/${token}/${encodeURIComponent(chargerId)}`, retries: 2, retryInterval: 60, startTime: new Date(Date.now() - minutes * 60000).toISOString(), stopTime: requestedAt });
+      if (result?.errorCode) throw Error(result.errorDescription || result.errorCode);
+      ticket.fileName = result?.fileName || null;
+      // The upload may finish before the OCPP response arrives.
+      const received = diagnosticReports.get(chargerId);
+      if (received?.status !== 'Ontvangen') diagnosticReports.set(chargerId, { ...received, status: ticket.fileName ? 'Upload verwacht' : 'Mislukt', fileName: ticket.fileName, error: ticket.fileName ? null : 'Geen bestandsnaam ontvangen.', transport: diagnosticFtpUrl ? 'FTP' : 'HTTPS' });
+      if (diagnosticFtpUrl && ticket.fileName) scheduleFtpDiagnosticDownload(chargerId, ticket);
+      return { fileName: ticket.fileName };
+    } catch (e) { diagnosticTokens.delete(token); diagnosticReports.set(chargerId, { ...diagnosticReports.get(chargerId), status: 'Mislukt', error: e.message }); throw e; }
+  };
+  const recoveryCenter = createRecoveryCenter({ getStation: recoveryStation, command: stationCommand, checkNetwork: recoveryNetworkDiagnostics, requestDiagnostics: requestShortDiagnostics, beforeClearTestProfile: id => { if (id === charger.id) { liveControl = false; lastSentLimit = null; } } });
   const buildDiagnosticReport=(chargerId,ticket,content)=>{const text=Buffer.isBuffer(content)?content.toString('utf8'):String(content),analysis=analyzeControllerLog(text.slice(-250000)),item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId),meterSetting=item?.configuration?.find(row=>row.key==='chg_KWH1')?.value||null,meterParts=meterSetting?meterSetting.split(','):[],meterAssessment=assessMeterIdentity(text,meterSetting,analysis);return{chargerId,status:'Ontvangen',requestedAt:ticket.requestedAt,receivedAt:new Date().toISOString(),fileName:ticket.fileName||null,bytes:Buffer.byteLength(text),controllerStatus:item?.diagnosticsStatus||null,meterConfiguration:meterSetting?{raw:meterSetting,type:meterParts[0]||null,address:meterParts[1]||null,baudrate:meterParts[2]||null,parity:meterParts[3]||null,stopBits:meterParts[4]||null}:null,meterAssessment,analysis,excerpt:text.slice(-20000)};};
   const scheduleFtpDiagnosticDownload=(chargerId,ticket)=>{let attempts=0,lastSize=null,stable=0;const run=async()=>{attempts++;const client=new FtpClient(15000);try{const url=new URL(diagnosticFtpUrl),fileName=String(ticket.fileName||'').split(/[\\/]/).at(-1);if(!fileName)throw Error('Homebox heeft geen bestandsnaam gemeld');await client.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});const directory=decodeURIComponent(url.pathname||'/').replace(/\/$/,'')||'/',entries=await client.list(directory),entry=entries.find(row=>row.name===fileName);if(!entry)throw Error('Bestand staat nog niet op de FTP-server');stable=entry.size===lastSize?stable+1:0;lastSize=entry.size;if(stable<1)throw Error('Upload is nog bezig');const chunks=[];let bytes=0;const sink=new Writable({write(chunk,encoding,callback){bytes+=chunk.length;if(bytes>5*1024*1024)return callback(Error('Diagnosebestand is groter dan 5 MB'));chunks.push(Buffer.from(chunk));callback();}});const remote=(directory==='/'?'':directory)+'/'+fileName;await client.downloadTo(sink,remote);diagnosticReports.set(chargerId,buildDiagnosticReport(chargerId,ticket,Buffer.concat(chunks)));return;}catch(error){diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),status:attempts>=20?'Mislukt':'FTP-upload wordt gevolgd',error:attempts>=20?error.message:null});if(attempts<20)setTimeout(run,15000).unref();}finally{client.close();}};setTimeout(run,10000).unref();};
   const pythonExe='C:\\Users\\melgh\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe';
@@ -104,6 +139,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(!response.ok)throw Error('status niet beschikbaar');
       const relay=await response.json(), connector=relay.connectors?.['1']||relay.connectors?.[1];
       charger={...charger,relayReachable:true,chargerConnected:!!relay.chargerConnected,backendConnected:!!relay.backendConnected,status:connector?.status||'Onbekend',errorCode:connector?.errorCode||null,lastSeen:relay.lastSeen||null,lastHeartbeat:relay.lastHeartbeat||null,lastStatusNotification:relay.lastStatusNotification||null,lastMeterValues:relay.lastMeterValues||null,lastMeterForwarded:relay.lastMeterForwarded||null,meterHistoryCount:relay.meterHistoryCount||0,meterHistory:Array.isArray(relay.meterHistory)?relay.meterHistory:[],meterValues:relay.meterValues||null,upstream:relay.upstream||null,connectedAt:relay.connectedAt||null,backendConnectedAt:relay.backendConnectedAt||null,activeTransaction:!!relay.activeTransaction,boot:relay.boot||null,id:relay.id||charger.id,forwarded:relay.forwarded||0,received:relay.received||0,events:Array.isArray(relay.events)?relay.events.slice(0,20):[],relayError:relay.error||null,lastLocalCommand:relay.lastLocalCommand||null};
+      Object.assign(charger,{connectors:relay.connectors||{},configuration:relay.configuration||[],configurationUpdatedAt:relay.configurationUpdatedAt||null,diagnosticsStatus:relay.diagnosticsStatus||null,diagnosticsStatusAt:relay.diagnosticsStatusAt||null,transactionId:relay.transactionId??null});
       charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;const fleet=typeof fleetProvider==='function'?fleetProvider():[{...charger}];charger.fleet=fleet.map(item=>({...item,watchdog:auditStation(item,diagnosticReports.get(item.id))}));
       for(const item of fleet){if(!item.chargerConnected){watchdogRequested.delete(item.id);continue;}if(watchdogRequested.has(item.id))continue;watchdogRequested.add(item.id);setTimeout(async()=>{const command=(action,payload)=>typeof fleetCommander==='function'?fleetCommander(item.id,action,payload):relayCommand(action,payload);try{await command('GetConfiguration',{});}catch{}try{await command('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch{}},1500).unref();}
     }catch{charger={...charger,relayReachable:false,chargerConnected:false,backendConnected:false,status:'Offline',relayError:'Lokale OCPP-tussenserver niet bereikbaar'};}
@@ -119,7 +155,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     }
   }
   async function relayCommand(action,payload){
-    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(10000)});
+    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(action==='GetConfiguration'?35000:10000)});
     const value=await response.json();if(!response.ok)throw Error(value.error||'OCPP-opdracht mislukt');return value.result;
   }
   async function changeProxyRoute(upstream){
@@ -135,7 +171,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const controlTimer=hardware?setInterval(async()=>{if(!liveControl||busy||!charger.chargerConnected)return;const target=state.result.actualA||0;if(lastSentLimit===target)return;busy=true;try{const result=await applyLimit(target);if(result?.status!=='Accepted')throw Error('Homebox antwoordt '+(result?.status||'onbekend'));}catch(e){lastControlError=e.message;liveControl=false;}finally{busy=false;}},5000):null;controlTimer?.unref();
   const hardwareTimer=hardware?setInterval(refreshHardware,2000):null;hardwareTimer?.unref();if(hardware)refreshHardware();
   const meterTimer=hardware?setInterval(async()=>{const meter=extractMeterReadings(charger.meterValues,charger.lastMeterValues);if(!charger.chargerConnected||!charger.backendConnected||!meter.stale||Date.now()-lastMeterRequest<60000)return;lastMeterRequest=Date.now();try{meterRequestResult=await relayCommand('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch(e){meterRequestResult={error:e.message};}},30000):null;meterTimer?.unref();
-  const files = new Map([['/',['ems.html','text/html; charset=utf-8']],['/app.mjs',['app.mjs','text/javascript; charset=utf-8']],['/dashboard.css',['dashboard.css','text/css; charset=utf-8']]]);
+  const files = new Map([['/',['ems.html','text/html; charset=utf-8']],['/app.mjs',['app.mjs','text/javascript; charset=utf-8']],['/dashboard.css',['dashboard.css','text/css; charset=utf-8']],['/recovery-ui.mjs',['recovery-ui.mjs','text/javascript; charset=utf-8']],['/recovery.css',['recovery.css','text/css; charset=utf-8']]]);
   const sessionToken=authUser?createHash('sha256').update(`${authUser}\0${authPassword}\0laadfix-ems-session`).digest('hex'):null;
   const same=(left,right)=>{const a=Buffer.from(String(left)),b=Buffer.from(String(right));return a.length===b.length&&timingSafeEqual(a,b);};
   const loginHtml=`<!doctype html><html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LaadFix EMS · Inloggen</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px system-ui;background:radial-gradient(circle at 20% 10%,#dff8ee 0,transparent 38%),linear-gradient(145deg,#f7fbf8,#e8f1ed);color:#16392d}.card{width:min(420px,calc(100% - 32px));padding:34px;border:1px solid #cce0d6;border-radius:24px;background:rgba(255,255,255,.92);box-shadow:0 28px 70px #174c3628}small{color:#2b7658;font-weight:800;letter-spacing:.16em}h1{margin:10px 0 8px;font-size:30px}p{margin:0 0 24px;color:#587068}label{display:block;margin:14px 0 6px;font-weight:700}input{width:100%;padding:13px 14px;border:1px solid #b8cec3;border-radius:12px;font:inherit;background:#fbfdfc}button{width:100%;margin-top:22px;padding:14px;border:0;border-radius:12px;background:linear-gradient(135deg,#08734c,#19a46f);color:white;font:700 16px system-ui;box-shadow:0 12px 25px #08734c38;cursor:pointer}.error{padding:10px 12px;border-radius:10px;background:#fff0ee;color:#a12c24;margin-bottom:14px}</style><main class="card"><small>LAADFIX LAB</small><h1>EMS Serviceconsole</h1><p>Log in om laadpalen, meterwaarden en verbindingen te bekijken.</p>{{ERROR}}<form method="post" action="/login"><label for="user">Gebruikersnaam</label><input id="user" name="user" autocomplete="username" required autofocus><label for="password">Wachtwoord</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Dashboard openen</button></form></main></html>`;
@@ -173,7 +209,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(req.method==='GET'&&req.url==='/logout'){res.writeHead(303,{'Location':'/login','Set-Cookie':'laadfix_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});res.end();return;}
       if(!loggedIn){if(req.url?.startsWith('/api/'))return send(401,{error:'Inloggen vereist'});res.writeHead(303,{'Location':'/login'});res.end();return;}
     }
-    if(req.method==='GET'&&req.url==='/api/state')return send(200,{...state,diagnostic,charger,meter:{...extractMeterReadings(charger.meterValues,charger.lastMeterValues),forwardedAt:charger.lastMeterForwarded||null,historyCount:charger.meterHistoryCount||0,lastRequest:lastMeterRequest?new Date(lastMeterRequest).toISOString():null,requestResult:meterRequestResult},led,service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,diagnostics:Object.fromEntries(diagnosticReports),powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),serviceResult,networkResult,control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities}});
+    if(req.method==='GET'&&req.url==='/api/state')return send(200,{...state,diagnostic,charger,recovery:{...recoveryCenter.snapshot(),stations:recoveryStations().map(item=>({id:item.id,chargerConnected:item.chargerConnected,backendConnected:item.backendConnected,status:item.status,connectors:item.connectors||{},connectorIds:connectorIds(item),blockedReason:recoveryGuard(item),lastSeen:item.lastSeen}))},meter:{...extractMeterReadings(charger.meterValues,charger.lastMeterValues),forwardedAt:charger.lastMeterForwarded||null,historyCount:charger.meterHistoryCount||0,lastRequest:lastMeterRequest?new Date(lastMeterRequest).toISOString():null,requestResult:meterRequestResult},led,service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,diagnostics:Object.fromEntries(diagnosticReports),powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),serviceResult,networkResult,control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities}});
     if(req.method==='GET'&&req.url==='/api/support-bundle'){
       const bundle={createdAt:new Date().toISOString(),application:'Ecotap serviceconsole',service:assessService(charger),intelligence:connectionIntelligence(charger,connectionSamples),logAnalysis,diagnostics:Object.fromEntries(diagnosticReports),powerRecovery:powerRecovery||recoveryMonitor.snapshot(charger),network:networkResult,charger:{...charger,events:charger.events?.slice(0,60)},ems:{settings:state.settings,result:state.result},control:{liveControl,lastSentLimit,lastControlError,lastControlResult,capabilities},serviceResult};
       res.writeHead(200,{'Content-Type':'application/json','Content-Disposition':`attachment; filename="ecotap-diagnose-${Date.now()}.json"`});res.end(JSON.stringify(bundle,null,2));return;
@@ -185,6 +221,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     try{
       let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>260000)throw Error('Aanvraag te groot');}
       const body=JSON.parse(raw);
+      if(req.url==='/api/recovery'||req.url==='/api/smart-recovery'){
+        if(busy)return send(429,{error:'Er loopt al een opdracht. Wacht op de uitkomst.'});
+        const stationId=String(body.id||charger.id),connectorId=Number(body.connectorId??1),action=req.url==='/api/smart-recovery'?'analyze':String(body.action||'');
+        const {job,done}=recoveryCenter.start({stationId,connectorId,action});busy=true;done.finally(()=>{busy=false;});
+        return send(202,{job});
+      }
       if(req.url==='/api/analyze-log'){logAnalysis=analyzeControllerLog(body.log);return send(200,{logAnalysis});}
       if(req.url==='/api/fleet-routing'){
         if(typeof fleetRouteChanger!=='function')throw Error('Vlootroutering is alleen online beschikbaar');
@@ -315,27 +357,6 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             serviceResult={action:body.action,status:received?'Meterwaarden ontvangen':'Aanvraag geaccepteerd, maar geen nieuwe meterdata ontvangen',steps:[`Homebox antwoord: ${result?.status||'onbekend'}`,received?`Meting: ${new Date(row?.time||charger.lastMeterValues).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`:'Binnen 6 seconden kwam geen nieuw MeterValues-bericht terug',`Energiestand: ${value(row?.energy||meter.energy)}`,`Spanning L1: ${value(row?.voltageL1)}`,`Stroom L1: ${value(row?.currentL1||meter.current)}`,`Frequentie: ${value(row?.frequency)}`,`Temperatuur: ${value(row?.temperature)}`,received&&charger.lastMeterForwarded?'Doorgestuurd naar Robo Charge':'Geen nieuw meterbericht om door te sturen'].filter(Boolean),result:{request:result,meter},advice:received?'Deze meting blijft ook in de vaste meterhistorie staan.':'De laatst opgeslagen waarden staan hierboven; probeer opnieuw tijdens een actieve laadsessie voor een nieuwe meting.',time:new Date().toISOString()};
           }else serviceResult={action:body.action,result,time:new Date().toISOString()};
           return send(200,{serviceResult});
-        }finally{busy=false;}
-      }
-      if(req.url==='/api/smart-recovery'){
-        if(busy)return send(429,{error:'Er loopt al een diagnose of opdracht'});
-        const before=assessService(charger),charging=charger.activeTransaction||['Charging','Preparing','Finishing'].includes(charger.status);
-        if(charging)throw Error('Slim herstel is geblokkeerd tijdens een actieve of startende laadsessie');
-        busy=true;
-        try{
-          networkResult=await networkDiagnostics();
-          if(!charger.chargerConnected){serviceResult={action:'smartRecovery',status:'Handmatige controle nodig',steps:['Netwerkdiagnose uitgevoerd','Geen OCPP-kanaal beschikbaar; een opdracht naar de Homebox is niet mogelijk'],advice:'Controleer com_Endpoint, ethernet en voeding van de Homebox.',time:new Date().toISOString()};return send(200,{serviceResult,networkResult});}
-          if(!charger.backendConnected){serviceResult={action:'smartRecovery',status:'Backofficeverbinding wordt opnieuw opgebouwd',steps:['Netwerkdiagnose uitgevoerd','De relay verbreekt een mislukte upstream-sessie automatisch zodat de Homebox opnieuw kan aanmelden'],advice:networkResult.backend.ok?'Wacht op de volgende aanmelding van de Homebox.':'Herstel eerst internet of DNS; resetten van de laadpaal helpt hier niet.',time:new Date().toISOString()};return send(200,{serviceResult,networkResult});}
-          const statusResult=await relayCommand('TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1});
-          const stale=before.lastMessageAgeMs===null||before.lastMessageAgeMs>=240000;
-          const unavailable=charger.status==='Unavailable'&&(!charger.errorCode||charger.errorCode==='NoError');
-          const fault=charger.status==='Faulted'||charger.errorCode&&charger.errorCode!=='NoError';
-          const steps=['Netwerkdiagnose uitgevoerd','Actuele StatusNotification opgevraagd'];
-          let resetResult=null,availabilityResult=null;
-          if(unavailable){availabilityResult=await relayCommand('ChangeAvailability',{connectorId:1,type:'Operative'});steps.push('Laadpunt weer beschikbaar gemaakt');}
-          else if(stale||fault){resetResult=await relayCommand('Reset',{type:'Soft'});steps.push('Veilige soft reset verzonden');}
-          serviceResult={action:'smartRecovery',status:availabilityResult?'Beschikbaarheid hersteld':resetResult?'Soft reset uitgevoerd':'Status opnieuw opgevraagd',steps,result:{statusResult,availabilityResult,resetResult},advice:'Controleer of de Homebox binnen enkele minuten opnieuw Available meldt.',time:new Date().toISOString()};
-          return send(200,{serviceResult,networkResult});
         }finally{busy=false;}
       }
       if(req.url==='/api/led'){
