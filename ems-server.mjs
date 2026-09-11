@@ -123,12 +123,13 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/routing`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upstream}),signal:AbortSignal.timeout(5000)});const value=await response.json();if(!response.ok)throw Error(value.error||'Proxyroute wijzigen mislukt');return value;
   }
   async function applyLimit(amps){
-    const limit=Math.max(6,Math.min(32,Math.round(amps*10)/10));
+    const requested=Math.round(Number(amps)*10)/10;
+    const limit=requested<=0?0:Math.max(6,Math.min(32,requested));
     const result=await relayCommand('SetChargingProfile',{connectorId:1,csChargingProfiles:{chargingProfileId:900001,stackLevel:20,chargingProfilePurpose:'TxDefaultProfile',chargingProfileKind:'Absolute',chargingSchedule:{chargingRateUnit:'A',chargingSchedulePeriod:[{startPeriod:0,limit}]}}});
     lastSentLimit=limit;lastControlResult=result;lastControlError=null;return result;
   }
   const timer = setInterval(()=>state=engine.tick(),1000); timer.unref();
-  const controlTimer=hardware?setInterval(async()=>{if(!liveControl||busy||!charger.chargerConnected)return;const target=Math.max(6,state.result.actualA||6);if(lastSentLimit===target)return;busy=true;try{const result=await applyLimit(target);if(result?.status!=='Accepted')throw Error('Homebox antwoordt '+(result?.status||'onbekend'));}catch(e){lastControlError=e.message;liveControl=false;}finally{busy=false;}},5000):null;controlTimer?.unref();
+  const controlTimer=hardware?setInterval(async()=>{if(!liveControl||busy||!charger.chargerConnected)return;const target=state.result.actualA||0;if(lastSentLimit===target)return;busy=true;try{const result=await applyLimit(target);if(result?.status!=='Accepted')throw Error('Homebox antwoordt '+(result?.status||'onbekend'));}catch(e){lastControlError=e.message;liveControl=false;}finally{busy=false;}},5000):null;controlTimer?.unref();
   const hardwareTimer=hardware?setInterval(refreshHardware,2000):null;hardwareTimer?.unref();if(hardware)refreshHardware();
   const meterTimer=hardware?setInterval(async()=>{const meter=extractMeterReadings(charger.meterValues,charger.lastMeterValues);if(!charger.chargerConnected||!charger.backendConnected||!meter.stale||Date.now()-lastMeterRequest<60000)return;lastMeterRequest=Date.now();try{meterRequestResult=await relayCommand('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch(e){meterRequestResult={error:e.message};}},30000):null;meterTimer?.unref();
   const files = new Map([['/',['ems.html','text/html; charset=utf-8']],['/app.mjs',['app.mjs','text/javascript; charset=utf-8']],['/dashboard.css',['dashboard.css','text/css; charset=utf-8']]]);
@@ -229,8 +230,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(req.url==='/api/reset'){engine.reset();state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/control'){
         if(typeof body.enabled!=='boolean')throw Error('Ongeldige instelling');
+        if(!charger.chargerConnected||!charger.backendConnected)throw Error('Homebox en backoffice moeten beide verbonden zijn');
         liveControl=body.enabled;lastControlError=null;
-        if(liveControl){const target=Math.max(6,state.result.actualA||6);lastControlResult=await applyLimit(target);if(lastControlResult?.status!=='Accepted'){liveControl=false;throw Error('Homebox weigert het laadprofiel: '+(lastControlResult?.status||'onbekend'));}}
+        if(liveControl){const target=state.result.actualA||0;lastControlResult=await applyLimit(target);if(lastControlResult?.status!=='Accepted'){liveControl=false;throw Error('Homebox weigert het laadprofiel: '+(lastControlResult?.status||'onbekend'));}}
+        else{lastControlResult=await relayCommand('ClearChargingProfile',{id:900001});lastSentLimit=null;if(lastControlResult?.status!=='Accepted'&&lastControlResult?.status!=='Unknown')throw Error('Testprofiel kon niet worden verwijderd: '+(lastControlResult?.status||'onbekend'));}
         return send(200,{liveControl,lastSentLimit,lastControlResult,lastControlError});
       }
       if(req.url==='/api/capabilities'){
