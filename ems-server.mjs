@@ -269,7 +269,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
         if(action==='remoteStart'&&active)throw Error('Er loopt al een laadsessie');
         if(action==='remoteStop'&&!Number.isInteger(commands[action][1].transactionId))throw Error('Geen actief transactie-ID beschikbaar');
-        busy=true;try{if(action==='diagnostics'&&!item.configuration?.some(row=>row.key==='chg_KWH1'))await fleetCommander(chargerId,'GetConfiguration',{key:['chg_KWH1']});const [ocppAction,payload]=commands[action],beforeStatus=item.lastStatusNotification,beforeMeter=item.lastMeterValues,result=await fleetCommander(chargerId,ocppAction,payload);let update=null;
+        busy=true;try{if(action==='diagnostics'&&!item.configuration?.some(row=>row.key==='chg_KWH1'))try{await fleetCommander(chargerId,'GetConfiguration',{key:['chg_KWH1']});}catch{}const [ocppAction,payload]=commands[action],beforeStatus=item.lastStatusNotification,beforeMeter=item.lastMeterValues,result=await fleetCommander(chargerId,ocppAction,payload);let update=null;
           if(['status','meterValues'].includes(action)&&result?.status==='Accepted'){
             const field=action==='status'?'lastStatusNotification':'lastMeterValues',before=action==='status'?beforeStatus:beforeMeter,deadline=Date.now()+8000;
             while(Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,500));const latest=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(latest?.[field]&&latest[field]!==before){update=latest;break;}}
