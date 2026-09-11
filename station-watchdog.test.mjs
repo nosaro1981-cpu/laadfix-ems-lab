@@ -20,3 +20,9 @@ test('bewaker bevestigt gezonde configuratie en meter',()=>{
   const result=auditStation({lastMeterValues:'2026-09-11T08:00:00Z',configuration:[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'},{key:'MeterValueSampleInterval',value:'60'},{key:'ClockAlignedDataInterval',value:'60'},{key:'MeterValuesSampledData',value:'Energy.Active.Import.Register,Current.Import.L1'},{key:'SupportedFeatureProfiles',value:'Core,SmartCharging'}],meterHistory:[{time:'2026-09-11T08:00:00Z',energy:{value:102},currentL1:{value:0}},{time:'2026-09-11T07:58:00Z',energy:{value:100},currentL1:{value:0}}]},null,now);
   assert.equal(result.status,'ok');
 });
+
+test('ontbrekend meetinterval wordt niet als nul geïnterpreteerd',()=>{
+  const result=auditStation({configuration:[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'}],meterHistory:[]});
+  assert.equal(result.configuration.sampleInterval,null);
+  assert.ok(result.findings.some(row=>row.code==='SAMPLE_UNKNOWN'));
+});

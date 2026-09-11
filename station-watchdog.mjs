@@ -1,5 +1,5 @@
 const age=(time,now)=>time?Math.max(0,now-Date.parse(time)):Infinity;
-const number=value=>{const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;};
+const number=value=>{if(value===null||value===undefined||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;};
 const setting=(configuration,key)=>configuration.find(row=>row.key===key)?.value??null;
 
 export function auditStation(station,diagnostic=null,now=Date.now()){
