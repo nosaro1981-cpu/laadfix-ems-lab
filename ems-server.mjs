@@ -11,6 +11,7 @@ import { Client as FtpClient } from 'basic-ftp';
 import { createEngine } from './ems.mjs';
 import { createRecoveryMonitor } from './power-recovery.mjs';
 import { connectionIntelligence, analyzeControllerLog, assessMeterIdentity } from './connection-intelligence.mjs';
+import { auditStation } from './station-watchdog.mjs';
 
 export function privateIPv4(ip) {
   if (net.isIP(ip) !== 4) return false;
@@ -102,7 +103,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(!response.ok)throw Error('status niet beschikbaar');
       const relay=await response.json(), connector=relay.connectors?.['1']||relay.connectors?.[1];
       charger={...charger,relayReachable:true,chargerConnected:!!relay.chargerConnected,backendConnected:!!relay.backendConnected,status:connector?.status||'Onbekend',errorCode:connector?.errorCode||null,lastSeen:relay.lastSeen||null,lastHeartbeat:relay.lastHeartbeat||null,lastStatusNotification:relay.lastStatusNotification||null,lastMeterValues:relay.lastMeterValues||null,lastMeterForwarded:relay.lastMeterForwarded||null,meterHistoryCount:relay.meterHistoryCount||0,meterHistory:Array.isArray(relay.meterHistory)?relay.meterHistory:[],meterValues:relay.meterValues||null,upstream:relay.upstream||null,connectedAt:relay.connectedAt||null,backendConnectedAt:relay.backendConnectedAt||null,activeTransaction:!!relay.activeTransaction,boot:relay.boot||null,id:relay.id||charger.id,forwarded:relay.forwarded||0,received:relay.received||0,events:Array.isArray(relay.events)?relay.events.slice(0,20):[],relayError:relay.error||null,lastLocalCommand:relay.lastLocalCommand||null};
-      charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;charger.fleet=typeof fleetProvider==='function'?fleetProvider():[{id:charger.id,chargerConnected:charger.chargerConnected,backendConnected:charger.backendConnected,status:charger.status,errorCode:charger.errorCode,lastSeen:charger.lastSeen,forwarded:charger.forwarded,received:charger.received,upstream:charger.upstream,error:charger.relayError}];
+      charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;const fleet=typeof fleetProvider==='function'?fleetProvider():[{...charger}];charger.fleet=fleet.map(item=>({...item,watchdog:auditStation(item,diagnosticReports.get(item.id))}));
     }catch{charger={...charger,relayReachable:false,chargerConnected:false,backendConnected:false,status:'Offline',relayError:'Lokale OCPP-tussenserver niet bereikbaar'};}
     charger.simulatedStatus=statusSimulation;
     charger.effectiveStatus=statusSimulation||charger.status;
