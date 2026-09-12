@@ -3,10 +3,13 @@ const node = (tag, text, className) => Object.assign(document.createElement(tag)
 const labels = { running: 'Bezig', ok: 'Afgerond', warning: 'Controle nodig', error: 'Niet geslaagd' };
 let snapshot = null, fullState = null, chosenStation = '', chosenConnector = 1, chosenJob = null, error = '', starting = false, pending = null;
 let actionSignature = '', reportSignature = '', historySignature = '';
+let caseBusy = false, caseError = '';
 
 const selected = () => snapshot?.stations?.find(s => s.id === chosenStation);
 const scopedJobs = () => (snapshot?.jobs || []).filter(j => j.stationId === chosenStation && j.connectorId === chosenConnector);
 const displayedJob = () => scopedJobs().find(j => j.id === chosenJob) || scopedJobs()[0];
+const stationCases = () => (snapshot?.cases || []).filter(item => item.stationId === chosenStation);
+const displayedCase = () => stationCases().find(item => ['intake', 'observing', 'analyzing', 'returning'].includes(item.status)) || stationCases()[0];
 const time = value => new Date(value).toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 function setOptions(select, entries, value) {
   const signature = JSON.stringify(entries);
@@ -100,6 +103,57 @@ function paintReport() {
   $('recoveryExport').disabled = job.status === 'running';
 }
 
+async function caseRequest(path, body) {
+  if (caseBusy) return;
+  caseBusy = true; caseError = ''; paintCase();
+  try {
+    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error || 'Case-opdracht mislukt.');
+    if (result.case) {
+      const index = (snapshot.cases ||= []).findIndex(item => item.id === result.case.id);
+      if (index >= 0) snapshot.cases[index] = result.case; else snapshot.cases.unshift(result.case);
+    }
+  } catch (e) { caseError = e.message; }
+  finally { caseBusy = false; paintCase(); }
+}
+
+function paintCase() {
+  if (!snapshot) return;
+  const item = displayedCase(), panel = $('recoveryCasePanel'), open = $('recoveryCaseOpen'), close = $('recoveryCaseClose');
+  const isOpen = item && ['intake', 'observing', 'analyzing', 'returning'].includes(item.status);
+  open.disabled = caseBusy || isOpen || !selected();
+  open.textContent = caseBusy ? 'Bezig…' : isOpen ? 'Case actief' : 'Case openen';
+  close.disabled = caseBusy || !isOpen;
+  close.hidden = !isOpen;
+  panel.hidden = !item;
+  if (!item) return;
+  const phases = { created: 'Starten', snapshot: 'Snapshot', rules: 'Analyseren', observation: 'Observeren', route_control: 'Route herstellen', complete: 'Afgesloten' };
+  $('recoveryCaseId').textContent = item.correlationId?.slice(0, 8) || item.id.slice(0, 8);
+  $('recoveryCasePhase').textContent = `${phases[item.phase] || item.phase} · ${item.status}${caseError ? ' · ' + caseError : ''}`;
+  $('recoveryCaseRoute').textContent = item.originalRoute || 'Niet gemeld';
+  const live = item.liveObservation;
+  $('recoveryCaseLive').textContent = live ? `${live.chargerConnected ? 'Lader ✓' : 'Lader ×'} · ${live.backendConnected ? 'RoboCharge ✓' : 'RoboCharge ×'} · ${live.received} in / ${live.forwarded} door` : 'Case afgesloten';
+  $('recoveryCaseDeadline').textContent = time(item.deadlineAt);
+  $('recoveryFindingCount').textContent = `${item.findings?.length || 0} bevindingen`;
+  const findings = $('recoveryCaseFindings'); findings.replaceChildren();
+  for (const finding of item.findings || []) {
+    const details = document.createElement('details'); details.className = `recovery-finding ${finding.severity}`;
+    const summary = document.createElement('summary'); summary.append(node('strong', finding.title), node('span', finding.risk + ' risico'));
+    const copy = node('div', '', 'recovery-finding-detail');
+    copy.append(node('p', `Actueel: ${finding.actual}`), node('p', `Verwacht: ${finding.expected}`), node('p', `Advies: ${finding.recommendation}`), node('small', `Bewijs: ${(finding.evidence || []).join(' · ')} · zekerheid ${Math.round((finding.confidence || 0) * 100)}%`));
+    details.append(summary, copy); findings.append(details);
+  }
+  if (!item.findings?.length) findings.append(node('p', 'De uitlezing en analyse lopen nog.', 'recovery-empty'));
+  const timeline = $('recoveryCaseTimeline'); timeline.replaceChildren(...(item.timeline || []).slice().reverse().map(entry => {
+    const li = node('li', '', entry.status); li.append(node('time', time(entry.time)), node('strong', entry.title), node('p', entry.detail)); return li;
+  }));
+  const comparison = $('recoveryCaseComparison'); comparison.replaceChildren();
+  const table = document.createElement('table'); table.className = 'case-comparison-table';
+  const head = document.createElement('thead'); const hr = document.createElement('tr'); ['Instelling', 'Actueel', 'Verwacht', 'Voorstel'].forEach(label => hr.append(node('th', label))); head.append(hr); table.append(head);
+  const body = document.createElement('tbody'); for (const row of item.comparisons || []) { const tr = document.createElement('tr'); [row.key, row.actual, row.expected, row.proposed].forEach(value => tr.append(node('td', String(value)))); body.append(tr); } table.append(body); comparison.append(table);
+}
+
 function paint() {
   if (!snapshot) return;
   const stations = snapshot.stations || [];
@@ -124,6 +178,7 @@ function paint() {
     button.disabled = !!reason; button.title = reason || spec.description;
   });
   paintReport();
+  paintCase();
   const jobs = scopedJobs().slice(0, 8), sig = JSON.stringify(jobs.map(j => [j.id, j.status, chosenJob]));
   if (sig !== historySignature) {
     historySignature = sig;
@@ -144,6 +199,8 @@ export function renderRecoveryCenter(state) {
 $('recoveryStation').addEventListener('change', e => { chosenStation = e.target.value; chosenConnector = 1; chosenJob = null; error = ''; paint(); });
 $('recoveryConnector').addEventListener('change', e => { chosenConnector = Number(e.target.value); chosenJob = null; error = ''; paint(); });
 $('recoveryAnalyze').addEventListener('click', () => start('analyze'));
+$('recoveryCaseOpen').addEventListener('click', () => caseRequest('/api/recovery-case/open', { id: chosenStation, connectorId: chosenConnector, maxDurationMinutes: Number($('recoveryCaseDuration').value) }));
+$('recoveryCaseClose').addEventListener('click', () => { const item = displayedCase(); if (item) caseRequest('/api/recovery-case/close', { caseId: item.id }); });
 $('recoveryConfirm').addEventListener('close', () => { const request = pending; pending = null; if ($('recoveryConfirm').returnValue === 'send' && request) start(request.action, request.target); });
 $('recoveryExport').addEventListener('click', () => {
   const job = displayedJob(); if (!job) return;

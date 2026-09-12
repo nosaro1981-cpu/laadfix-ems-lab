@@ -13,7 +13,7 @@
     "local": "node service-manager.mjs",
     "cloud": "node server.js",
     "ems": "node ems-server.mjs",
-    "test": "node --test test.mjs ems.test.mjs relay.test.mjs cloud.test.mjs connection-intelligence.test.mjs station-watchdog.test.mjs recovery-center.test.mjs",
+    "test": "node --test test.mjs ems.test.mjs relay.test.mjs cloud.test.mjs connection-intelligence.test.mjs station-watchdog.test.mjs recovery-center.test.mjs recovery-case-manager.test.mjs",
     "relay": "node relay.mjs",
     "ocpp-test": "node server.mjs"
   },
