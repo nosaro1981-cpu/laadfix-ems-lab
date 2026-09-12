@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {startEMS} from './ems-server.mjs';
+
+test('automatic meter requests wait for a diagnostic upload and resume after receipt', async () => {
+  const station={id:'QUIET-TEST',chargerConnected:true,backendConnected:true,status:'Available',configuration:[{key:'chg_KWH1',value:'TEST'}]};
+  const readings=[];
+  let diagnostic;
+  const relay=http.createServer(async(req,res)=>{
+    res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/state') return res.end(JSON.stringify(station));
+    let raw='';for await(const chunk of req)raw+=chunk;
+    readings.push(JSON.parse(raw));res.end(JSON.stringify({result:{status:'Accepted'}}));
+  });
+  await new Promise(resolve=>relay.listen(0,'127.0.0.1',resolve));
+  const app=await startEMS({port:0,hardware:true,ledHardware:false,publicHost:'quiet.example.test',authUser:'test',authPassword:'test',relayMonitorPort:relay.address().port,meterPollIntervalMs:500,fleetProvider:()=>[station],fleetCommander:async(id,action,payload)=>{diagnostic=payload;return{fileName:'QUIET-TESTDiag1.xls'};}});
+  const base=`http://127.0.0.1:${app.port}`,authorization='Basic '+Buffer.from('test:test').toString('base64');
+  try {
+    const request=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:station.id,action:'diagnostics'})});
+    assert.equal(request.status,200);
+    await new Promise(resolve=>setTimeout(resolve,650));
+    assert.deepEqual(readings,[],'the controller should get no automatic meter requests while its upload is pending');
+    const upload=await fetch(base+new URL(diagnostic.location).pathname,{method:'PUT',body:'Controller diagnostic test\n'});
+    assert.equal(upload.status,201);
+    await new Promise(resolve=>setTimeout(resolve,650));
+    assert.equal(readings.length,1);
+    assert.equal(readings[0].action,'TriggerMessage');
+    assert.equal(readings[0].payload.requestedMessage,'MeterValues');
+  } finally {
+    await app.close();await new Promise(resolve=>relay.close(resolve));
+  }
+});

@@ -10,7 +10,16 @@ export async function diagnosticLocation(configured, variant = 'default', resolv
   if (!['ftp:', 'ftps:'].includes(url.protocol)) throw Error('FTP is niet ingesteld');
   const host = variant.startsWith('ipv4') ? (await resolve(url.hostname, { family: 4 })).address : url.hostname;
   const user = variant.endsWith('-raw') ? decodeURIComponent(url.username) : url.username;
-  return `${url.protocol}//${user}:${url.password}@${host}:${url.port || 21}${url.pathname === '/' ? '' : url.pathname}`;
+  const password = variant.endsWith('-raw') ? decodeURIComponent(url.password) : url.password;
+  const location = `${url.protocol}//${user}:${password}@${host}:${url.port || 21}${url.pathname === '/' ? '' : url.pathname}`;
+  if (variant.endsWith('-raw')) {
+    let parsed;
+    try { parsed = new URL(location); } catch { throw Error('Deze inloggegevens kunnen niet ongecodeerd in een FTP-adres'); }
+    if (parsed.hostname !== host || decodeURIComponent(parsed.username) !== decodeURIComponent(url.username) || decodeURIComponent(parsed.password) !== password) {
+      throw Error('Ongecodeerde FTP-notatie zou het account of de bestemming veranderen');
+    }
+  }
+  return location;
 }
 
 export async function testDiagnosticFtp(configured, createClient = () => new Client(15000)) {

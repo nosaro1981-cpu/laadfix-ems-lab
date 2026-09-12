@@ -8,6 +8,8 @@ test('Compatibility variants preserve account and destination without accepting 
   assert.equal(await diagnosticLocation(configured),configured);
   assert.equal(await diagnosticLocation(configured,'ipv4',resolve),'ftp://account%40example.test:password@192.0.2.1:21');
   assert.equal(await diagnosticLocation(configured,'ipv4-raw',resolve),'ftp://account@example.test:password@192.0.2.1:21');
+  assert.equal(await diagnosticLocation('ftp://account:pw%40rd@ftp.example.test/','ipv4-raw',resolve),'ftp://account:pw@rd@192.0.2.1:21');
+  await assert.rejects(diagnosticLocation('ftp://account:pw%23rd@ftp.example.test/','hostname-raw'),/account|inloggegevens/);
   await assert.rejects(diagnosticLocation(configured,'ftp://other.test'),/Onbekende/);
 });
 
