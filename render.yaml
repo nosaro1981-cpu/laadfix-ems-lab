@@ -19,3 +19,5 @@ services:
         sync: false
       - key: DASHBOARD_PASSWORD
         sync: false
+      - key: DIAGNOSTICS_FTP_URL
+        sync: false
