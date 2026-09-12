@@ -16,7 +16,7 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  try{
  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TEST','ocpp1.6');await once(charger,'open');[up]=await connected;
  async function forward(sender,receiver,raw){const received=once(receiver,'message');sender.send(raw);assert.equal((await received)[0].toString(),raw);}
- await forward(charger,up,'[2,"boot-1","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST","firmwareVersion":"TEST"}]');
+ await forward(charger,up,'[2,"boot-1","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST","firmwareVersion":"TEST","iccid":"89462038075016961884","imsi":"240075823773701","meterType":"Eastron SDM72D","meterSerialNumber":"21280066"}]');
  await forward(up,charger,'[3,"boot-1",{"status":"Accepted","currentTime":"2026-09-09T00:00:00Z","interval":60}]');
  await forward(charger,up,'[2,"auth","Authorize",{"idTag":"TEST-TAG"}]');
  await forward(up,charger,'[3,"auth",{"idTagInfo":{"status":"Accepted"}}]');
@@ -26,7 +26,7 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  await forward(charger,up,'[3,"diag-1",{"fileName":"TEST-diag.txt"}]');
  await forward(charger,up,'[2,"status-1","StatusNotification",{"connectorId":1,"status":"Faulted","errorCode":"PowerMeterFailure"}]');
  await forward(charger,up,'[2,"meter-1","MeterValues",{"connectorId":1,"meterValue":[{"timestamp":"2026-09-10T07:16:54Z","sampledValue":[{"measurand":"Energy.Active.Import.Register","unit":"Wh","value":"149"},{"measurand":"Voltage","phase":"L1","unit":"V","value":"232.8"}]}]}]');
- assert.equal(app.state.connectors[1].errorCode,'PowerMeterFailure');assert.equal(app.state.forwarded,10);assert.equal(app.state.meterHistory[0].energy.value,149);assert.ok(app.state.meterHistory[0].forwardedAt);assert.equal(app.state.remoteDiagnostics.fileName,'TEST-diag.txt');assert.equal(app.state.remoteDiagnostics.locationHost,'example.test');assert.ok(!JSON.stringify(app.state).includes('TEST-TAG'));assert.ok(!JSON.stringify(app.state).includes('topsecret'));
+ assert.equal(app.state.connectors[1].errorCode,'PowerMeterFailure');assert.equal(app.state.forwarded,10);assert.equal(app.state.meterHistory[0].energy.value,149);assert.ok(app.state.meterHistory[0].forwardedAt);assert.equal(app.state.remoteDiagnostics.fileName,'TEST-diag.txt');assert.equal(app.state.remoteDiagnostics.locationHost,'example.test');assert.equal(app.state.boot.meterType,'Eastron SDM72D');assert.equal(app.state.boot.meterSerialNumber,'21280066');assert.equal(app.state.boot.iccid,'89462038075016961884');assert.ok(!JSON.stringify(app.state).includes('TEST-TAG'));assert.ok(!JSON.stringify(app.state).includes('topsecret'));
  const disconnected=once(charger,'close');up.close();await disconnected;assert.equal(app.state.backendConnected,false);
  const reconnected=once(backend,'connection');charger2=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TEST','ocpp1.6');await once(charger2,'open');[up2]=await reconnected;
  await forward(charger2,up2,'[2,"boot-2","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST"}]');
