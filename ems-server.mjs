@@ -288,13 +288,14 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           clearProfile:['ClearChargingProfile',{connectorId:1,chargingProfilePurpose:'TxDefaultProfile'}],
           remoteStart:['RemoteStartTransaction',{connectorId:1,idTag:String(body.idTag||'LAADFIX').slice(0,20)}],
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
+          backendReconnect:['reconnectBackend',{}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
           meterIdentification:['DataTransfer',{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}],
           diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:ocppDateTime(Date.now()-5*60_000),stopTime:ocppDateTime(Date.now())}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
-        if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
+        if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart','backendReconnect'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
         if(action==='remoteStart'&&active)throw Error('Er loopt al een laadsessie');
         if(action==='remoteStop'&&!Number.isInteger(commands[action][1].transactionId))throw Error('Geen actief transactie-ID beschikbaar');
         busy=true;try{if(action==='diagnostics'&&!item.configuration?.some(row=>row.key==='chg_KWH1'))try{await fleetCommander(chargerId,'GetConfiguration',{key:['chg_KWH1']});}catch{}const [ocppAction,payload]=commands[action],beforeStatus=item.lastStatusNotification,beforeMeter=item.lastMeterValues,result=await fleetCommander(chargerId,ocppAction,payload);let update=null;
@@ -329,6 +330,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
               clearProfile:[accepted?'Laadprofiel gewist':'Laadprofiel niet gewist',accepted?'Het TxDefaultProfile voor connector 1 is verwijderd.':'De Homebox vond of verwijderde het laadprofiel niet.','Controleer onder EMS of er nog een actieve vermogenslimiet wordt toegepast.'],
               remoteStart:[accepted?'Startverzoek geaccepteerd':'Laadsessie niet gestart',accepted?'De Homebox heeft testtag LAADFIX ontvangen. StartTransaction en Charging moeten de echte start nog bevestigen.':'De Homebox heeft RemoteStartTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
               remoteStop:[accepted?'Stopverzoek geaccepteerd':'Laadsessie niet gestopt',accepted?'De Homebox heeft opdracht gekregen de actieve transactie te beëindigen. StopTransaction bevestigt de echte stop.':'De Homebox heeft RemoteStopTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
+              backendReconnect:[result?.status==='Started'?'Nieuwe backofficeverbinding gestart':result?.status==='AlreadyConnected'?'Backoffice was al verbonden':'Backofficeverbinding wordt opgebouwd','Alleen de proxyverbinding naar de ingestelde backend is vernieuwd. De Homeboxsocket is open gebleven.','De proxy blijft automatisch opnieuw proberen. Gebruik deze knop alleen wanneer je direct een extra poging wilt starten.'],
               changeConfiguration:[accepted?'Configuratiewijziging geaccepteerd':'Configuratiewijziging geweigerd',`Instelling ${configKey} is naar de Homebox verstuurd.`,accepted?'Lees de instelling opnieuw uit om de opgeslagen waarde te bevestigen.':'De huidige waarde is niet gewijzigd.'],
               getConfiguration:['Configuratie ontvangen',`${Array.isArray(result?.configurationKey)?result.configurationKey.length:0} instellingen door de Homebox teruggestuurd.`,'De actuele waarden staan onder Configuratie.']
             },description=descriptions[action];

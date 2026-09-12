@@ -9,6 +9,7 @@ export const recoveryActions = {
   configuration: { title: 'Instellingen controleren', description: 'Leest alle instellingen en toont communicatie, laadlimieten en ingestelde meters.' },
   grid: { title: 'Master/slave-instellingen lezen', description: 'Toont de gridrol, CAN-instelling en watchdog. Bevestigt geen fysieke CAN-verbinding.' },
   diagnostics: { title: 'Diagnosebestand · 5 minuten', description: 'Vraagt een controllerbestand over de laatste vijf minuten aan. Volgt ontvangst apart.' },
+  backendReconnect: { title: 'Backofficeverbinding herstellen', description: 'Opent alleen de verbinding van de proxy naar de ingestelde backend opnieuw. De Homebox blijft verbonden.', changes: true, scope: 'station' },
   operative: { title: 'Connector beschikbaar maken', description: 'Geeft de gekozen connector weer vrij voor gebruik. Een aangesloten auto kan daarna laden als de autorisatie dat toestaat.', changes: true, scope: 'connector' },
   softReset: { title: 'Laadsoftware herstarten', description: 'Stuurt een soft reset naar het hele station. De verbinding kan tijdelijk wegvallen.', changes: true, scope: 'station' },
   unlock: { title: 'Stekker ontgrendelen', description: 'Vraagt de gekozen connector zijn stekkervergrendeling vrij te geven.', changes: true, scope: 'connector' },
@@ -140,12 +141,13 @@ export function createRecoveryCenter({ getStation, command, checkNetwork, reques
           return { status: actual === '60' && response.status === 'Accepted' ? 'ok' : 'warning', detail: `Oude waarde: ${old} s. Gevraagd: 60 s. Teruggelezen: ${actual ?? 'niet ontvangen'} s.\nAntwoord: ${response.status}.${response.status === 'RebootRequired' ? ' De lader vraagt een herstart; die is niet automatisch uitgevoerd.' : ''}\nDit verandert alleen het sample-interval; nieuwe meterwaarden moeten de werking nog bevestigen.` };
         });
       } else {
-        const commands = { operative: ['ChangeAvailability', { connectorId, type: 'Operative' }], softReset: ['Reset', { type: 'Soft' }], unlock: ['UnlockConnector', { connectorId }], clearCache: ['ClearCache', {}], clearTestProfile: ['ClearChargingProfile', { id: 900001 }] };
+        const commands = { operative: ['ChangeAvailability', { connectorId, type: 'Operative' }], softReset: ['Reset', { type: 'Soft' }], unlock: ['UnlockConnector', { connectorId }], clearCache: ['ClearCache', {}], clearTestProfile: ['ClearChargingProfile', { id: 900001 }], backendReconnect: ['reconnectBackend', {}] };
         if (action === 'clearTestProfile') beforeClearTestProfile(stationId);
         await addStep(recoveryActions[action].title, async () => {
           if (recoveryGuard(station())) throw Error(recoveryGuard(station()));
           const [name, payload] = commands[action], response = await call(name, payload);
           const result = response?.status || 'onbekend';
+          if (action === 'backendReconnect') return { status: ['Started', 'AlreadyConnected', 'Connecting'].includes(result) ? 'ok' : 'warning', detail: result === 'Started' ? 'Een nieuwe verbinding naar de ingestelde backend is gestart. De Homeboxsocket is open gebleven; de automatische herstelpogingen blijven actief.' : result === 'AlreadyConnected' ? 'De backofficeverbinding was al geopend.' : `Proxy antwoordt: ${result}.` };
           if (action === 'unlock') return { status: result === 'Unlocked' ? 'ok' : 'warning', detail: `Lader meldt ${result}.${result === 'Unlocked' ? ' Controleer of de stekker fysiek vrij is.' : ' Ontgrendeling is niet bevestigd.'}` };
           if (action === 'clearTestProfile' && result === 'Unknown') return { status: 'warning', detail: 'Geen passend testprofiel 900001 gevonden. Andere laadprofielen zijn niet verwijderd.' };
           if (result !== 'Accepted') return { status: 'warning', detail: `${name}: ${result}.${result === 'Scheduled' ? ' Uitvoering is uitgesteld door de lader.' : ' Uitvoering niet bevestigd.'}` };

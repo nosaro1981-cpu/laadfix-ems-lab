@@ -48,7 +48,7 @@ function buildActions() {
   if (signature === actionSignature) return;
   actionSignature = signature;
   $('recoveryChecks').replaceChildren(); $('recoveryFixes').replaceChildren();
-  const icons = { network: '⇄', status: '◎', meter: '▥', configuration: '⚙', grid: '⌘', diagnostics: '↓', operative: '✓', softReset: '↻', unlock: '⌑', clearCache: '▤', clearTestProfile: '↯', meterInterval: '◷' };
+  const icons = { network: '⇄', status: '◎', meter: '▥', configuration: '⚙', grid: '⌘', diagnostics: '↓', backendReconnect: '⇅', operative: '✓', softReset: '↻', unlock: '⌑', clearCache: '▤', clearTestProfile: '↯', meterInterval: '◷' };
   for (const [key, spec] of Object.entries(snapshot.actions)) {
     if (key === 'analyze') continue;
     const button = node('button', '', 'recovery-action'); button.type = 'button'; button.dataset.recoveryAction = key;
