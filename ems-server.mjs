@@ -274,6 +274,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
+          meterIdentification:['DataTransfer',{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}],
           diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:ocppDateTime(Date.now()-5*60_000),stopTime:ocppDateTime(Date.now())}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
@@ -296,6 +297,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             status=update?'Nieuwe meterwaarden ontvangen':'Verzoek geaccepteerd, geen nieuwe meterwaarden ontvangen';
             if(update){const row=update.meterHistory?.[0],value=(sample,fallback='niet meegestuurd')=>sample&&Number.isFinite(Number(sample.value))?`${Number(sample.value).toLocaleString('nl-NL',{maximumFractionDigits:3})} ${sample.unit||''}`.trim():fallback;steps.push(`Meting: ${new Date(update.lastMeterValues).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`,`Energiestand: ${value(row?.energy)}`,`Spanning L1: ${value(row?.voltageL1)}`,`Stroom L1: ${value(row?.currentL1)}`,`Frequentie: ${value(row?.frequency)}`,`Temperatuur: ${value(row?.temperature)}`,update.lastMeterForwarded?'Doorgestuurd naar Robo Charge':'Nog niet doorgestuurd naar Robo Charge');}
             else advice='Deze Homebox antwoordt buiten een actieve laadsessie mogelijk niet met MeterValues. De laatst opgeslagen meting blijft beschikbaar onder Meterwaarden.';
+          }
+          if(action==='meterIdentification'){
+            const outcome=result?.status||'Geen status';status='Meteridentificatieproef: '+outcome;steps.push('Vendor: Ecotap','Opdracht: GetMeterInfo','Antwoorddata: '+(result?.data??'niet meegestuurd'));
+            advice=outcome==='Accepted'?'De controller herkent de opdracht. Controleer de antwoorddata op model, meter code en serienummer.':outcome==='UnknownMessageId'?'Ecotap wordt herkend, maar GetMeterInfo is geen bekende opdrachtnaam voor deze firmware.':'Deze firmware ondersteunt deze Ecotap-uitleesproef niet met de gebruikte vendor-identificatie.';
           }
           if(!['status','meterValues'].includes(action)){
             const accepted=result?.status==='Accepted',descriptions={
