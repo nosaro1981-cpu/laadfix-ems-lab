@@ -20,7 +20,7 @@ test('OCPP-verkeerslog schermt passen en FTP-wachtwoorden af',()=>{
 });
 test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {timeout:10000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
- const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TEST',upstream:'ws://127.0.0.1:'+backend.address().port+'/TEST',meterLogFile:null,backendRetryDelaysMs:[20]});
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TEST',upstream:'ws://127.0.0.1:'+backend.address().port+'/TEST',meterLogFile:null,backendRetryDelaysMs:[20],backendReconnectProbeDelayMs:50});
  let charger,up,up2;
  try{
  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TEST','ocpp1.6');await once(charger,'open');[up]=await connected;
