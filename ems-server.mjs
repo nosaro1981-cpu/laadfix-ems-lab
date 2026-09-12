@@ -229,6 +229,15 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         return send(202,{job});
       }
       if(req.url==='/api/analyze-log'){logAnalysis=analyzeControllerLog(body.log);return send(200,{logAnalysis});}
+      if(req.url==='/api/diagnostics-import'){
+        if(!diagnosticFtpUrl)throw Error('Er is geen diagnose-FTP ingesteld');
+        const chargerId=String(body.id||''),fileName=String(body.fileName||'').trim();
+        if(!recoveryStations().some(item=>item.id===chargerId))throw Error('Onbekend laadstation');
+        if(!/^[A-Za-z0-9._-]{1,180}$/.test(fileName)||!fileName.startsWith(chargerId+'-diag-'))throw Error('Bestandsnaam hoort niet bij dit laadstation');
+        const ticket={chargerId,requestedAt:new Date().toISOString(),expiresAt:Date.now()+15*60_000,fileName};
+        diagnosticReports.set(chargerId,{chargerId,status:'FTP-bestand wordt gezocht',requestedAt:ticket.requestedAt,fileName,transport:'FTP',source:'handmatige bestandsnaam'});
+        scheduleFtpDiagnosticDownload(chargerId,ticket);return send(202,{status:'FTP-bestand wordt gezocht',fileName});
+      }
       if(req.url==='/api/fleet-routing'){
         if(typeof fleetRouteChanger!=='function')throw Error('Vlootroutering is alleen online beschikbaar');
         const result=await fleetRouteChanger(String(body.id||''),String(body.upstream||''));
