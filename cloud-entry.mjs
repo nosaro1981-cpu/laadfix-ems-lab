@@ -15,7 +15,7 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   const safeFileId=value=>value.replace(/[^A-Za-z0-9._-]/g,'_');
   async function getRelay(chargerId){
     if(relays.has(chargerId))return relays.get(chargerId);
-    const promise=startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:chargerId,pathSecret,upstream:routeFor(chargerId),meterLogFile:chargerId===id?meterLogFile:`data/meter-values-${safeFileId(chargerId)}.ndjson`,routingFile:chargerId===id?routingFile:`data/proxy-routing-${safeFileId(chargerId)}.json`});
+    const promise=startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:chargerId,pathSecret,upstream:routeFor(chargerId),meterLogFile:chargerId===id?meterLogFile:`data/meter-values-${safeFileId(chargerId)}.ndjson`,routingFile:chargerId===id?routingFile:`data/proxy-routing-${safeFileId(chargerId)}.json`,legacyPingRecovery:true});
     relays.set(chargerId,promise);
     try{const app=await promise;relays.set(chargerId,app);return app;}catch(error){relays.delete(chargerId);throw error;}
   }

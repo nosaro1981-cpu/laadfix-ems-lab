@@ -78,3 +78,17 @@ test('GetConfiguration wordt opgeslagen en ChangeConfiguration werkt de actuele 
   assert.equal(app.state.configuration.find(row=>row.key==='HeartbeatInterval').value,'60');assert.ok(app.state.configurationUpdatedAt);
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+
+test('Oude firmware zonder eerste OCPP-bericht krijgt eenmalig pingcompatibiliteitsherstel', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'LEGACY',upstream:'ws://127.0.0.1:'+backend.address().port+'/LEGACY',meterLogFile:null,legacyPingRecovery:true,legacyPingRecoveryDelayMs:10});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/LEGACY','ocpp1.6');await once(charger,'open');[up]=await connected;
+  const [raw]=await once(charger,'message'),call=JSON.parse(raw.toString());
+  assert.equal(call[2],'ChangeConfiguration');
+  assert.deepEqual(call[3],{key:'WebSocketPingInterval',value:'0'});
+  const closed=once(charger,'close');charger.send(JSON.stringify([3,call[1],{status:'Accepted'}]));await closed;
+  assert.ok(app.state.connectionTimeline.some(row=>row.type==='legacy_ping_recovery_applied'));
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});

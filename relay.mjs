@@ -34,9 +34,10 @@ export function sanitizeOcppPayload(value,key=''){
   return value;
 }
 
-export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', allowedIp='192.168.1.168', id='RBC-0000032', upstream='ws://ocpp.robo-charge.net:80/RBC-0000032',meterLogFile='meter-values.ndjson',routingFile='proxy-routing.json',pathSecret=''}={}) {
+export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', allowedIp='192.168.1.168', id='RBC-0000032', upstream='ws://ocpp.robo-charge.net:80/RBC-0000032',meterLogFile='meter-values.ndjson',routingFile='proxy-routing.json',pathSecret='',legacyPingRecovery=false,legacyPingRecoveryDelayMs=2000}={}) {
   if(allowedIp==='*'&&pathSecret.length<24)throw Error('Een openbare OCPP-route vereist een geheim pad van minimaal 24 tekens');
   let active=null;
+  let legacyPingRecoveryApplied=false;
   const pending=new Map();
   const roundTripPending=new Map();
   const messageActions=new Map();
@@ -120,13 +121,38 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     state.connectionDiagnostics.sessionId++;state.connectionDiagnostics.chargerTrafficSeen=false;state.connectionDiagnostics.backendTrafficSeen=false;state.connectionDiagnostics.bootAccepted=false;state.connectionDiagnostics.stage='connecting_backend';state.connectionDiagnostics.lastBackendAttemptAt=new Date().toISOString();trace('charger_connected','ok','Homebox WebSocket geopend','OCPP 1.6-handshake geaccepteerd');trace('backend_attempt','info','Robo Charge verbinden',state.upstream);
     const up=new WebSocket(state.upstream,'ocpp1.6',{handshakeTimeout:8000,maxPayload:256*1024,headers,perMessageDeflate:false,skipUTF8Validation:true});
     const session={down,up};active=session;state.chargerConnected=true;state.backendConnected=false;state.connectedAt=new Date().toISOString();state.error=null;state.connectionStats.sessions++;log('Homebox verbonden');
-    let queue=[],queuedBytes=0,closing=false;
-    const close=()=>{if(closing)return;closing=true;queue=[];state.connectionStats.queuedMessages=0;state.connectionStats.disconnects++;state.connectionStats.lastDisconnect=new Date().toISOString();state.connectionDiagnostics.stage='offline';roundTripPending.clear();if(active===session){active=null;state.chargerConnected=false;state.backendConnected=false;}for(const ws of [up,down]){if(ws.readyState===WebSocket.CONNECTING)ws.terminate();else if(ws.readyState===WebSocket.OPEN)ws.close(1011,'Relay connection ended');}const cleanup=setTimeout(()=>{up.terminate();down.terminate();},1000);cleanup.unref();};
+    let queue=[],queuedBytes=0,closing=false,legacyTimer=null;
+    const close=()=>{if(closing)return;closing=true;if(legacyTimer)clearTimeout(legacyTimer);queue=[];state.connectionStats.queuedMessages=0;state.connectionStats.disconnects++;state.connectionStats.lastDisconnect=new Date().toISOString();state.connectionDiagnostics.stage='offline';roundTripPending.clear();if(active===session){active=null;state.chargerConnected=false;state.backendConnected=false;}for(const ws of [up,down]){if(ws.readyState===WebSocket.CONNECTING)ws.terminate();else if(ws.readyState===WebSocket.OPEN)ws.close(1011,'Relay connection ended');}const cleanup=setTimeout(()=>{up.terminate();down.terminate();},1000);cleanup.unref();};
     const forward=(target,data)=>{if(target.readyState!==WebSocket.OPEN||target.bufferedAmount>1024*1024){state.error='Verbinding onderbroken; Homebox moet opnieuw verbinden';close();return;}target.send(data,{binary:false},err=>{if(err)close();});state.forwarded++;if(target===up){try{const m=JSON.parse(data.toString());if(Array.isArray(m)&&m[0]===2&&m[2]==='MeterValues'){state.lastMeterForwarded=new Date().toISOString();const row=state.meterHistory.find(x=>x.messageId===m[1]);if(row)row.forwardedAt=state.lastMeterForwarded;recordMeter({event:'forwarded',time:state.lastMeterForwarded,messageId:m[1]});}}catch{}}};
     down.on('message',(raw,binary)=>{if(binary){close();return;}const text=raw.toString();observe(text,'Homebox');
       try{const m=JSON.parse(text),waiting=Array.isArray(m)&&[3,4].includes(m[0])?pending.get(m[1]):null;if(waiting){clearTimeout(waiting.timer);pending.delete(m[1]);const result=m[0]===3?m[2]:{errorCode:m[2],errorDescription:m[3],errorDetails:m[4]};if(waiting.action==='GetConfiguration'&&Array.isArray(result?.configurationKey)){state.configuration=result.configurationKey.map(row=>({key:String(row.key||''),readonly:!!row.readonly,value:String(row.value??'')}));state.configurationUpdatedAt=new Date().toISOString();}if(waiting.action==='ChangeConfiguration'&&result?.status==='Accepted'){const row=state.configuration.find(item=>item.key===waiting.payload?.key);if(row)row.value=String(waiting.payload.value??'');else state.configuration.push({key:String(waiting.payload?.key||''),readonly:false,value:String(waiting.payload?.value??'')});state.configurationUpdatedAt=new Date().toISOString();}state.lastLocalCommand={action:waiting.action,status:m[0]===3?(result?.status||'Antwoord'):'Foutantwoord',started:waiting.started,finished:new Date().toISOString(),result};log('Homebox → lokaal',waiting.action+' · '+state.lastLocalCommand.status);waiting.resolve(result);return;}}catch{}
       if(up.readyState===WebSocket.OPEN)forward(up,raw);else if(up.readyState===WebSocket.CONNECTING){queuedBytes+=raw.length;if(queue.length>=20||queuedBytes>256*1024){close();return;}queue.push(raw);state.connectionStats.queuedMessages=queue.length;}else close();});
-    up.on('open',()=>{if(closing){up.close();return;}state.backendConnected=true;state.backendConnectedAt=new Date().toISOString();Object.assign(state.connectionDiagnostics,{stage:'online',lastBackendConnectedAt:state.backendConnectedAt,lastFailureType:null,lastFailureLabel:null,lastFailureMessage:null,lastAdvice:null});trace('backend_connected','ok','Robo Charge WebSocket geopend','De volledige route is verbonden',state.backendConnectedAt);log('Robo Charge verbonden');for(const raw of queue)forward(up,raw);queue=[];queuedBytes=0;state.connectionStats.queuedMessages=0;});
+    up.on('open',()=>{
+      if(closing){up.close();return;}
+      state.backendConnected=true;state.backendConnectedAt=new Date().toISOString();Object.assign(state.connectionDiagnostics,{stage:'online',lastBackendConnectedAt:state.backendConnectedAt,lastFailureType:null,lastFailureLabel:null,lastFailureMessage:null,lastAdvice:null});trace('backend_connected','ok','Robo Charge WebSocket geopend','De volledige route is verbonden',state.backendConnectedAt);log('Robo Charge verbonden');for(const raw of queue)forward(up,raw);queue=[];queuedBytes=0;state.connectionStats.queuedMessages=0;
+      // Some older Ecotap firmware closes after its client-side WebSocket ping.
+      // Use the brief connected window to disable that ping once. OCPP Heartbeat
+      // remains active and newer firmware, which sends traffic immediately, is untouched.
+      if(legacyPingRecovery&&!legacyPingRecoveryApplied){
+        legacyTimer=setTimeout(async()=>{
+          if(closing||state.connectionDiagnostics.chargerTrafficSeen)return;
+          trace('legacy_ping_recovery','warning','Oudere firmwarecompatibiliteit','Geen BootNotification ontvangen; client-ping wordt eenmalig uitgeschakeld');
+          log('Compatibiliteitsherstel','WebSocketPingInterval → 0');
+          try{
+            const result=await localCommand('ChangeConfiguration',{key:'WebSocketPingInterval',value:'0'},6000);
+            if(result?.status==='Accepted'){
+              legacyPingRecoveryApplied=true;
+              trace('legacy_ping_recovery_applied','ok','Pingcompatibiliteit geaccepteerd','Homebox verbindt opnieuw zonder client-ping');
+              const reconnect=setTimeout(()=>{if(down.readyState===WebSocket.OPEN)down.close(1012,'Ping compatibility applied');},250);
+              reconnect.unref?.();
+            }else trace('legacy_ping_recovery_rejected','error','Pingcompatibiliteit geweigerd',String(result?.status||'Onbekend'));
+          }catch(error){
+            trace('legacy_ping_recovery_failed','error','Pingcompatibiliteit niet toegepast',error.message);
+          }
+        },legacyPingRecoveryDelayMs);
+        legacyTimer.unref?.();
+      }
+    });
     up.on('message',(raw,binary)=>{if(binary){close();return;}observe(raw.toString(),'Robo Charge');forward(down,raw);});
     for(const [ws,name]of [[up,'Robo Charge'],[down,'Homebox']]){
       ws.on('error',e=>{const failure=classifyConnectionFailure(name,e.message),time=new Date().toISOString();state.error=name+': '+e.message;Object.assign(state.connectionDiagnostics,{stage:'failed',lastFailureAt:time,lastFailureType:failure.type,lastFailureLabel:failure.label,lastFailureMessage:e.message,lastAdvice:failure.advice});trace('connection_error','error',failure.label,e.message,time);if(ws===up)state.connectionStats.backendErrors++;else state.connectionStats.chargerErrors++;log('Verbindingsfout',state.error);close();});
