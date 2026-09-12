@@ -12,6 +12,8 @@ export default {
     // WebSocket subprotocol. Bridge that legacy handshake to strict OCPP 1.6.
     const requestedProtocols = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
+    const selectedProtocol = requestedProtocols.find(value => /^ocpp1\.6j?$/i.test(value)) || null;
+    console.log(JSON.stringify({event:'ocpp_ingress',path:url.pathname,protocols:requestedProtocols,country:request.cf?.country||null,colo:request.cf?.colo||null}));
     const pair = new WebSocketPair();
     const client = pair[0];
     const charger = pair[1];
@@ -30,7 +32,7 @@ export default {
       else if (queue.length < 50) queue.push(event.data);
       else closeBoth(1011, 'Wachtrij vol');
     });
-    charger.addEventListener('close', event => closeBoth(event.code || 1000, 'Laadstation gesloten'));
+    charger.addEventListener('close', event => {console.log(JSON.stringify({event:'charger_close',code:event.code,reason:event.reason||''}));closeBoth(event.code || 1000, 'Laadstation gesloten');});
     charger.addEventListener('error', () => closeBoth());
     ctx.waitUntil((async () => {
       try {
@@ -41,16 +43,18 @@ export default {
         backend = response.webSocket;
         if (!backend) throw new Error(`Render weigerde WebSocket: ${response.status}`);
         backend.accept();
+        console.log(JSON.stringify({event:'backend_open',status:response.status}));
         backend.addEventListener('message', event => { if (!closed) charger.send(event.data); });
         backend.addEventListener('close', event => closeBoth(event.code || 1011, 'Backend gesloten'));
         backend.addEventListener('error', () => closeBoth());
         for (const message of queue.splice(0)) backend.send(message);
-      } catch {
+      } catch (error) {
+        console.log(JSON.stringify({event:'bridge_error',message:String(error?.message||error)}));
         closeBoth();
       }
     })());
     const headers = new Headers();
-    if (requestedProtocols.includes('ocpp1.6')) headers.set('Sec-WebSocket-Protocol', 'ocpp1.6');
+    if (selectedProtocol) headers.set('Sec-WebSocket-Protocol', selectedProtocol);
     return new Response(null, {status: 101, webSocket: client, headers});
   },
 };

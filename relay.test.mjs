@@ -27,6 +27,7 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  async function forward(sender,receiver,raw){const received=once(receiver,'message');sender.send(raw);assert.equal((await received)[0].toString(),raw);}
  await forward(charger,up,'[2,"boot-1","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST","firmwareVersion":"TEST","iccid":"89462038075016961884","imsi":"240075823773701","meterType":"Eastron SDM72D","meterSerialNumber":"21280066"}]');
  await forward(up,charger,'[3,"boot-1",{"status":"Accepted","currentTime":"2026-09-09T00:00:00Z","interval":60}]');
+ assert.equal(app.state.connectionDiagnostics.bootAccepted,true);assert.ok(app.state.connectionDiagnostics.lastBootAcceptedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='boot_accepted'));
  await forward(charger,up,'[2,"auth","Authorize",{"idTag":"TEST-TAG"}]');
  await forward(up,charger,'[3,"auth",{"idTagInfo":{"status":"Accepted"}}]');
  await forward(up,charger,'[2,"read-1","GetConfiguration",{"key":["HeartbeatInterval"]}]');
@@ -39,7 +40,7 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  const disconnected=once(charger,'close');up.close();await disconnected;assert.equal(app.state.backendConnected,false);
  const reconnected=once(backend,'connection');charger2=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TEST','ocpp1.6');await once(charger2,'open');[up2]=await reconnected;
  await forward(charger2,up2,'[2,"boot-2","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST"}]');
- assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.connectionDiagnostics.stage,'online');assert.ok(app.state.connectionDiagnostics.lastIngressAt);assert.ok(app.state.connectionDiagnostics.lastBackendConnectedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_connected'));assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_traffic'));
+ assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.connectionDiagnostics.stage,'online');assert.equal(app.state.connectionDiagnostics.bootAccepted,false);assert.ok(app.state.connectionDiagnostics.lastIngressAt);assert.ok(app.state.connectionDiagnostics.lastBackendConnectedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_connected'));assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_traffic'));
  }finally{charger?.terminate();up?.terminate();charger2?.terminate();up2?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 test('Relay wijst een andere laadpaal-ID af', {timeout:5000},async()=>{

@@ -17,6 +17,7 @@ DNS RESOLVED:172.67.175.189
 HTTP connect to [172.67.175.189][80][1]
 WS CONNECTION ERROR 0
 HTTP CLIENT CLOSE [5]
+WS PONG TIMEOUT
 2026-09-12 02:51:23:EV RETRY [4] DELAY [3] Min
 KWH:AD[1]RG[FC00]REC[9,9]ERR[TO]
 Reader init error (32);0,1,2,1`;
@@ -25,7 +26,9 @@ Reader init error (32);0,1,2,1`;
  assert.equal(result.facts.gsmSignal,21);
  assert.equal(result.facts.retryDelayMinutes,3);
  assert.equal(result.stats.webSocketErrors,1);
+ assert.equal(result.stats.webSocketPongTimeouts,1);
  assert.ok(result.findings.some(item=>item.code==='WS_HANDSHAKE'));
+ assert.ok(result.findings.some(item=>item.code==='WS_PONG_TIMEOUT'));
  assert.ok(result.findings.some(item=>item.code==='METER_TIMEOUT'));
  assert.ok(result.timeline.some(item=>item.type==='websocket'));
 });
