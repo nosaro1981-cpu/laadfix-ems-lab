@@ -2,6 +2,13 @@ const EXPECTED_PATH = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/RBC-0000032';
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
 
 export default {
+  async scheduled(_controller, _env, ctx) {
+    ctx.waitUntil(fetch(RENDER_ORIGIN + '/healthz', {
+      headers:{'User-Agent':'LaadFix-OCPP-healthcheck'},
+      cf:{cacheTtl:0,cacheEverything:false},
+    }).then(response => console.log(JSON.stringify({event:'backend_health',status:response.status})))
+      .catch(error => console.log(JSON.stringify({event:'backend_health_error',message:String(error?.message||error)}))));
+  },
   async fetch(request) {
     const url = new URL(request.url);
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket' || url.pathname !== EXPECTED_PATH) {
