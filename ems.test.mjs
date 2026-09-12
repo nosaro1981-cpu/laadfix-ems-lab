@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -52,6 +52,11 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
  e.set({...structuredClone(defaults),pvW:0});assert.equal(e.tick(6000).result.actualA,0);
  e.set({...structuredClone(defaults),mode:'fast'});assert.equal(e.tick(7000).result.actualA,0);assert.equal(e.tick(12000).result.actualA,16);
  e.set({...structuredClone(defaults),mode:'fast',phases:1});assert.equal(e.tick(13000).result.actualA,0);
+});
+
+test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
+ const original='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0';
+ const maximum=maximizeDiagnosticDebug(original);assert.match(maximum,/warn=1/);assert.match(maximum,/events=1/);for(const key of ['gsm','com','ocpp','eth','grid','ctrl','general','sensors','fw','modbus','canbus','sys'])assert.match(maximum,new RegExp(`${key}=7`));
 });
 test('Primaire dashboardstatus neemt OCPP-diagnose uit de actuele vloot over',()=>{
  const charger={id:'RBC-1',chargerConnected:true,backendConnected:true};
@@ -116,11 +121,18 @@ test('Lokale diagnose-ontvanger gebruikt een eenmalig token en levert online ana
  let command=null;const fleet=[{id:'DIAGLOCAL',chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[{key:'chg_KWH1',value:'EASTR_SDM630,1,9600,N,1',readonly:false}]}];
  const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{command={id,action,payload};return{fileName:'DIAGLOCALDiag123.xls'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
  try{
-  let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGLOCAL',action:'diagnostics',localReceiverIp:'192.168.43.20',localReceiverPort:2121})});assert.equal(response.status,200);
+  let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGLOCAL',action:'diagnostics',localReceiverIp:'192.168.43.20',localReceiverPort:2121,enhancedDebug:false})});assert.equal(response.status,200);
   const location=new URL(command.payload.location);assert.equal(location.protocol,'ftp:');assert.equal(location.hostname,'192.168.43.20');assert.equal(location.port,'2121');assert.match(location.username,/^[a-f0-9]{48}$/);assert.equal(location.password,'DIAGLOCAL');
   const upload=`${base}/api/diagnostics-upload/${location.username}/${location.password}`;
   response=await fetch(upload,{method:'PUT',body:'Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[1]RG[FC00]R[1]OK\nKWH METER [CH][SERIAL][TYPE]:[0][21280066][Eastron SDM72D]\n'});assert.equal(response.status,201);
   response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});let report=(await response.json()).diagnostics.DIAGLOCAL;assert.equal(report.status,'Ontvangen');assert.equal(report.destination,'Lokale ontvanger (192.168.43.20)');assert.equal(report.meterIdentity.model,'SDM72D');assert.equal(report.meterIdentity.serial,'21280066');assert.equal(report.meterAssessment.mismatch,true);
   response=await fetch(base+'/api/diagnostics-manual',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/octet-stream','X-Charger-Id':'DIAGLOCAL','X-File-Name':encodeURIComponent('handmatig.xls')},body:'KWH METER [CH][SERIAL][TYPE]:[0][9988][Eastron SDM630]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);report=(await response.json()).report;assert.equal(report.source,'Handmatige browserupload');assert.equal(report.meterIdentity.model,'SDM630');assert.equal(report.meterIdentity.serial,'9988');
  }finally{await app.close();}
+});
+
+test('Uitgebreide lokale diagnose herstelt chg_Debug na de upload',async()=>{
+ const original='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0',calls=[],fleet=[{id:'DIAGMAX',chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[{key:'chg_Debug',value:original},{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'}]}];
+ const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:10,fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{calls.push({action,payload});return action==='GetDiagnostics'?{fileName:'DIAGMAX.xls'}:{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
+ try{let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGMAX',action:'diagnostics',localReceiverIp:'192.168.1.20',localReceiverPort:2121})});assert.equal(response.status,202);for(let i=0;i<30&&!calls.some(row=>row.action==='GetDiagnostics');i++)await new Promise(resolve=>setTimeout(resolve,10));const request=calls.find(row=>row.action==='GetDiagnostics');assert.ok(request);assert.match(calls[0].payload.value,/modbus=7/);const location=new URL(request.payload.location);response=await fetch(`${base}/api/diagnostics-upload/${location.username}/${location.password}`,{method:'PUT',body:'KWH METER [CH][SERIAL][TYPE]:[0][123][Eastron SDM72D]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);assert.equal(calls.at(-1).action,'ChangeConfiguration');assert.equal(calls.at(-1).payload.value,original);response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});const report=(await response.json()).diagnostics.DIAGMAX;assert.equal(report.debugRestoreStatus,'Originele debuginstelling hersteld');}
+ finally{await app.close();}
 });
