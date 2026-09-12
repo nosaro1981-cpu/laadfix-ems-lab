@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {WebSocket,WebSocketServer} from 'ws';
-import {startRelay,normalizeUpstream,classifyConnectionFailure} from './relay.mjs';
+import {startRelay,normalizeUpstream,classifyConnectionFailure,sanitizeOcppPayload} from './relay.mjs';
 test('Proxybestemming accepteert alleen OCPP WebSocket-routes met laadpaal-ID',()=>{
  assert.equal(normalizeUpstream('wss://example.test/ocpp/#OSN#','TEST'),'wss://example.test/ocpp/TEST');
  assert.throws(()=>normalizeUpstream('https://example.test/TEST','TEST'));
@@ -13,6 +13,10 @@ test('Verbindingsfouten krijgen een begrijpelijke oorzaak',()=>{
  assert.equal(classifyConnectionFailure('Robo Charge','getaddrinfo ENOTFOUND ocpp.example').type,'dns');
  assert.equal(classifyConnectionFailure('Robo Charge','Unexpected server response: 403').type,'handshake');
  assert.equal(classifyConnectionFailure('Homebox','socket hang up').type,'charger');
+});
+test('OCPP-verkeerslog schermt passen en FTP-wachtwoorden af',()=>{
+ const value=sanitizeOcppPayload({idTag:'PRIVATE-TAG',location:'ftp://user:password@example.test/log.txt'});
+ assert.equal(value.idTag,'[afgeschermd]');assert.equal(value.location,'ftp://***:***@example.test/log.txt');
 });
 test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {timeout:10000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
@@ -35,12 +39,12 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  const disconnected=once(charger,'close');up.close();await disconnected;assert.equal(app.state.backendConnected,false);
  const reconnected=once(backend,'connection');charger2=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TEST','ocpp1.6');await once(charger2,'open');[up2]=await reconnected;
  await forward(charger2,up2,'[2,"boot-2","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST"}]');
- assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.connectionDiagnostics.stage,'online');assert.ok(app.state.connectionDiagnostics.lastIngressAt);assert.ok(app.state.connectionDiagnostics.lastBackendConnectedAt);
+ assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.connectionDiagnostics.stage,'online');assert.ok(app.state.connectionDiagnostics.lastIngressAt);assert.ok(app.state.connectionDiagnostics.lastBackendConnectedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_connected'));assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_traffic'));
  }finally{charger?.terminate();up?.terminate();charger2?.terminate();up2?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 test('Relay wijst een andere laadpaal-ID af', {timeout:5000},async()=>{
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TEST',upstream:'ws://127.0.0.1/TEST',meterLogFile:null});
- try{const ws=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/OTHER','ocpp1.6');ws.on('error',()=>{});const [,res]=await once(ws,'unexpected-response');assert.equal(res.statusCode,403);ws.terminate();assert.equal(app.state.chargerConnected,false);assert.equal(app.state.connectionDiagnostics.lastFailureType,'path');assert.equal(app.state.connectionDiagnostics.rejectedUpgrades,1);}finally{await app.close();}
+ try{const ws=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/OTHER','ocpp1.6');ws.on('error',()=>{});const [,res]=await once(ws,'unexpected-response');assert.equal(res.statusCode,403);ws.terminate();assert.equal(app.state.chargerConnected,false);assert.equal(app.state.connectionDiagnostics.lastFailureType,'path');assert.equal(app.state.connectionDiagnostics.rejectedUpgrades,1);assert.ok(app.state.connectionTimeline.some(row=>row.type==='rejected'));}finally{await app.close();}
 });
 test('Online relay vereist ook het geheime OCPP-pad', {timeout:5000},async()=>{
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'*',id:'TEST',pathSecret:'geheim-pad-met-minimaal-24-tekens',upstream:'ws://127.0.0.1/TEST',meterLogFile:null});
