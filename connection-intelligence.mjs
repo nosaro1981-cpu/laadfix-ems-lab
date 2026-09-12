@@ -10,7 +10,7 @@ export function connectionIntelligence(charger,samples=[],now=Date.now()){
   const p95=percentile(latencies,.95),median=percentile(latencies,.5);
   const recent=samples.filter(row=>now-row.time<5*60_000),transitions=recent.slice(1).filter((row,index)=>row.chargerConnected!==recent[index].chargerConnected||row.backendConnected!==recent[index].backendConnected).length;
   let score=100;
-  if(!charger.chargerConnected)score-=45;if(!charger.backendConnected)score-=35;
+  if(!charger.chargerConnected)score-=45;if(!charger.backendConnected)score-=35;if(charger.commandHealth?.degraded)score-=30;
   score-=clamp((messageAge-60_000)/6_000,0,18);
   score-=clamp((heartbeatAge-180_000)/20_000,0,12);
   score-=Math.min(20,(disconnects+transitions)*4);
@@ -22,6 +22,7 @@ export function connectionIntelligence(charger,samples=[],now=Date.now()){
   const findings=[];
   if(!charger.chargerConnected)findings.push({level:'critical',title:'Homebox-kanaal weg',detail:'De laadpaal meldt zich niet aan op de proxy. Controleer transport, endpoint en voeding.'});
   else if(!charger.backendConnected)findings.push({level:'critical',title:'Alleen upstream weg',detail:'De Homebox bereikt de proxy wel. Controleer DNS, internet en de gekozen backoffice; herstart de lader nog niet.'});
+  if(charger.chargerConnected&&charger.commandHealth?.degraded)findings.push({level:'critical',title:'Socket open maar bediening reageert niet',detail:`${charger.commandHealth.lastTimeoutAction||'Een OCPP-opdracht'} kreeg geen antwoord. Telemetrie kan nog binnenkomen, maar de verbinding is niet gezond.`});
   if(charger.chargerConnected&&charger.backendConnected&&messageAge>120_000)findings.push({level:'warning',title:'Stille verbinding',detail:'De socket staat open maar berichten blijven uit. Vraag status op; reset pas als ook die opdracht geen antwoord geeft.'});
   if(disconnects+transitions>=3)findings.push({level:'warning',title:'Flapperende verbinding',detail:`${disconnects+transitions} wisselingen in 15 minuten. Controleer kabel, DHCP-lease, 4G-signaal en voedingsdippen.`});
   if(p95!==null&&p95>3000)findings.push({level:'warning',title:'Oplopende vertraging',detail:`95% van de antwoorden blijft onder ${Math.round(p95)} ms. Dit kan een voorbode zijn van pakketverlies of een drukke backoffice.`});

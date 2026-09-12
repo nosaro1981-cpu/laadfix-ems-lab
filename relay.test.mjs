@@ -66,6 +66,32 @@ test('Lokale serviceopdracht gaat alleen naar de Homebox en verwerkt antwoord', 
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 
+test('Open sockets worden verstoord gemeld wanneer een backofficeopdracht geen antwoord krijgt', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'HEALTH',upstream:'ws://127.0.0.1:'+backend.address().port+'/HEALTH',meterLogFile:null,backendCommandTimeoutMs:25});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/HEALTH','ocpp1.6');await once(charger,'open');[up]=await connected;
+  up.send('[2,"probe-1","TriggerMessage",{"requestedMessage":"Heartbeat"}]');await once(charger,'message');
+  await new Promise(resolve=>setTimeout(resolve,45));
+  assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.commandHealth.degraded,true);assert.equal(app.state.commandHealth.lastTimeoutAction,'TriggerMessage');assert.ok(app.state.connectionTimeline.some(row=>row.type==='command_timeout'));
+  up.send('[2,"probe-2","TriggerMessage",{"requestedMessage":"StatusNotification","connectorId":1}]');await once(charger,'message');charger.send('[3,"probe-2",{"status":"Accepted"}]');await new Promise(resolve=>setTimeout(resolve,15));
+  assert.equal(app.state.commandHealth.degraded,false);assert.equal(app.state.commandHealth.status,'healthy');assert.ok(app.state.commandHealth.lastAnsweredAt);
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
+
+test('Twee onbeantwoorde leesopdrachten vernieuwen automatisch alleen de vastgelopen socket', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'RECOVER',upstream:'ws://127.0.0.1:'+backend.address().port+'/RECOVER',meterLogFile:null,backendCommandTimeoutMs:20});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/RECOVER','ocpp1.6');await once(charger,'open');[up]=await connected;
+  up.send('[2,"probe-a","TriggerMessage",{"requestedMessage":"Heartbeat"}]');await once(charger,'message');await new Promise(resolve=>setTimeout(resolve,30));
+  const closed=once(charger,'close');up.send('[2,"probe-b","TriggerMessage",{"requestedMessage":"StatusNotification","connectorId":1}]');await once(charger,'message');await closed;
+  assert.ok(app.state.commandHealth.autoRecoveryAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='stale_socket_recovery'));assert.equal(app.state.activeTransaction,false);
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
+
 test('Ecotap DataTransfer voor meteridentificatie bereikt de Homebox', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'METER',upstream:'ws://127.0.0.1:'+backend.address().port+'/METER',meterLogFile:null});
