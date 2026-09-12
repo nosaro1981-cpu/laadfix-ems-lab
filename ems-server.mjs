@@ -96,7 +96,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   let connectionSamples=[],logAnalysis=null;
   let liveControl=false,lastSentLimit=null,lastControlError=null,lastControlResult=null,capabilities=null,serviceResult=null,networkResult=null,lastMeterRequest=0,meterRequestResult=null,statusRequestedForConnection=null;
   const watchdogRequested=new Set();
-  const diagnosticTokens=new Map(),diagnosticReports=new Map();
+  const diagnosticTokens=new Map(),diagnosticReports=new Map(),importedRemoteDiagnostics=new Set();
   const diagnosticFtpUrl=String(process.env.DIAGNOSTICS_FTP_URL||'').trim();
   const recoveryStations = () => typeof fleetProvider === 'function' ? fleetProvider() : [charger];
   const recoveryStation = id => recoveryStations().find(item => item.id === id);
@@ -139,8 +139,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(!response.ok)throw Error('status niet beschikbaar');
       const relay=await response.json(), connector=relay.connectors?.['1']||relay.connectors?.[1];
       charger={...charger,relayReachable:true,chargerConnected:!!relay.chargerConnected,backendConnected:!!relay.backendConnected,status:connector?.status||'Onbekend',errorCode:connector?.errorCode||null,lastSeen:relay.lastSeen||null,lastHeartbeat:relay.lastHeartbeat||null,lastStatusNotification:relay.lastStatusNotification||null,lastMeterValues:relay.lastMeterValues||null,lastMeterForwarded:relay.lastMeterForwarded||null,meterHistoryCount:relay.meterHistoryCount||0,meterHistory:Array.isArray(relay.meterHistory)?relay.meterHistory:[],meterValues:relay.meterValues||null,upstream:relay.upstream||null,connectedAt:relay.connectedAt||null,backendConnectedAt:relay.backendConnectedAt||null,activeTransaction:!!relay.activeTransaction,boot:relay.boot||null,id:relay.id||charger.id,forwarded:relay.forwarded||0,received:relay.received||0,events:Array.isArray(relay.events)?relay.events.slice(0,20):[],relayError:relay.error||null,lastLocalCommand:relay.lastLocalCommand||null};
-      Object.assign(charger,{connectors:relay.connectors||{},configuration:relay.configuration||[],configurationUpdatedAt:relay.configurationUpdatedAt||null,diagnosticsStatus:relay.diagnosticsStatus||null,diagnosticsStatusAt:relay.diagnosticsStatusAt||null,transactionId:relay.transactionId??null});
+      Object.assign(charger,{connectors:relay.connectors||{},configuration:relay.configuration||[],configurationUpdatedAt:relay.configurationUpdatedAt||null,diagnosticsStatus:relay.diagnosticsStatus||null,diagnosticsStatusAt:relay.diagnosticsStatusAt||null,remoteDiagnostics:relay.remoteDiagnostics||null,transactionId:relay.transactionId??null});
       charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;const fleet=typeof fleetProvider==='function'?fleetProvider():[{...charger}];charger.fleet=fleet.map(item=>({...item,watchdog:auditStation(item,diagnosticReports.get(item.id))}));
+      if(diagnosticFtpUrl)for(const item of fleet){const remote=item.remoteDiagnostics;if(!remote?.fileName||importedRemoteDiagnostics.has(remote.messageId))continue;importedRemoteDiagnostics.add(remote.messageId);const ticket={chargerId:item.id,requestedAt:remote.requestedAt||new Date().toISOString(),expiresAt:Date.now()+15*60_000,fileName:remote.fileName};diagnosticReports.set(item.id,{chargerId:item.id,status:'FTP-upload wordt gevolgd',requestedAt:ticket.requestedAt,fileName:ticket.fileName,transport:'FTP',source:'Robo Charge',locationHost:remote.locationHost||null});scheduleFtpDiagnosticDownload(item.id,ticket);}
       for(const item of fleet){if(!item.chargerConnected){watchdogRequested.delete(item.id);continue;}if(watchdogRequested.has(item.id))continue;watchdogRequested.add(item.id);setTimeout(async()=>{const command=(action,payload)=>typeof fleetCommander==='function'?fleetCommander(item.id,action,payload):relayCommand(action,payload);try{await command('GetConfiguration',{});}catch{}try{await command('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch{}},1500).unref();}
     }catch{charger={...charger,relayReachable:false,chargerConnected:false,backendConnected:false,status:'Offline',relayError:'Lokale OCPP-tussenserver niet bereikbaar'};}
     charger.simulatedStatus=statusSimulation;
@@ -155,7 +156,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     }
   }
   async function relayCommand(action,payload){
-    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(action==='GetConfiguration'?35000:10000)});
+    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(['GetConfiguration','GetDiagnostics'].includes(action)?35000:10000)});
     const value=await response.json();if(!response.ok)throw Error(value.error||'OCPP-opdracht mislukt');return value.result;
   }
   async function changeProxyRoute(upstream){
@@ -249,7 +250,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(action==='diagnostics'){
           if(!publicName)throw Error('Voor diagnose-upload is een openbaar dashboardadres nodig');
           diagnosticToken=randomBytes(24).toString('hex');diagnosticLocation=diagnosticFtpUrl||`https://${publicName}/api/diagnostics-upload/${diagnosticToken}/${encodeURIComponent(chargerId)}`;
-          const requestedAt=new Date().toISOString();diagnosticTokens.set(diagnosticToken,{chargerId,requestedAt,expiresAt:Date.now()+15*60_000,fileName:null});diagnosticReports.set(chargerId,{chargerId,status:'Aangevraagd',requestedAt,locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=new Date().toISOString();diagnosticTokens.set(diagnosticToken,{chargerId,requestedAt,expiresAt:Date.now()+15*60_000,fileName:null});diagnosticReports.set(chargerId,{chargerId,status:'Aangevraagd',requestedAt,minutes:5,locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
@@ -263,7 +264,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
-          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:new Date(Date.now()-24*60*60_000).toISOString(),stopTime:new Date().toISOString()}]
+          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:new Date(Date.now()-5*60_000).toISOString(),stopTime:new Date().toISOString()}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');

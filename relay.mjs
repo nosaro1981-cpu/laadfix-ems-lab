@@ -27,13 +27,22 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
   const summary=(payload,time,messageId)=>{const samples=(payload?.meterValue||[]).flatMap(v=>v.sampledValue||[]),find=(m,phase)=>{const v=samples.find(x=>(x.measurand||'Energy.Active.Import.Register')===m&&(!phase||x.phase===phase));return v?{value:Number(v.value),unit:v.unit||'',phase:v.phase||null}:null;};return {messageId,time,energy:find('Energy.Active.Import.Register'),voltageL1:find('Voltage','L1'),currentL1:find('Current.Import','L1'),frequency:find('Frequency'),temperature:find('Temperature'),forwardedAt:null};};
   let archivedMeter=null,archivedForward=null,meterHistoryCount=0,meterHistory=[];
   if(meterLogUrl&&existsSync(meterLogUrl)){try{for(const line of readFileSync(meterLogUrl,'utf8').trim().split(/\r?\n/)){if(!line)continue;const item=JSON.parse(line);if(item.event==='received'){archivedMeter=item;meterHistoryCount++;meterHistory.unshift(summary(item.payload,item.time,item.messageId));meterHistory=meterHistory.slice(0,20);}if(item.event==='forwarded'){archivedForward=item;const row=meterHistory.find(x=>x.messageId===item.messageId);if(row)row.forwardedAt=item.time;}}}catch{}}
-  const state={chargerConnected:false,backendConnected:false,id,upstream:currentUpstream,received:0,forwarded:0,lastSeen:null,lastHeartbeat:null,lastStatusNotification:null,lastMeterValues:archivedMeter?.time||null,lastMeterForwarded:archivedForward?.time||null,lastMeterMessageId:archivedMeter?.messageId||null,meterHistoryCount,meterHistory,connectedAt:null,backendConnectedAt:null,activeTransaction:false,transactionId:null,boot:null,connectors:{},meterValues:archivedMeter?.payload||null,configuration:[],configurationUpdatedAt:null,diagnosticsStatus:null,diagnosticsStatusAt:null,events:[],error:null,lastLocalCommand:null,roundTrips:[],connectionStats:{sessions:0,disconnects:0,backendErrors:0,chargerErrors:0,lastDisconnect:null,queuedMessages:0}};
+  const state={chargerConnected:false,backendConnected:false,id,upstream:currentUpstream,received:0,forwarded:0,lastSeen:null,lastHeartbeat:null,lastStatusNotification:null,lastMeterValues:archivedMeter?.time||null,lastMeterForwarded:archivedForward?.time||null,lastMeterMessageId:archivedMeter?.messageId||null,meterHistoryCount,meterHistory,connectedAt:null,backendConnectedAt:null,activeTransaction:false,transactionId:null,boot:null,connectors:{},meterValues:archivedMeter?.payload||null,configuration:[],configurationUpdatedAt:null,diagnosticsStatus:null,diagnosticsStatusAt:null,remoteDiagnostics:null,events:[],error:null,lastLocalCommand:null,roundTrips:[],connectionStats:{sessions:0,disconnects:0,backendErrors:0,chargerErrors:0,lastDisconnect:null,queuedMessages:0}};
   const recordMeter=item=>{if(!meterLogUrl)return;try{appendFileSync(meterLogUrl,JSON.stringify(item)+'\n');}catch(e){state.error='Meterarchief: '+e.message;}};
   const log=(action,detail='')=>{state.events.unshift({time:new Date().toISOString(),action,detail});state.events.splice(60);};
   function observe(raw,direction){
     state.received++;state.lastSeen=new Date().toISOString();
     try{const m=JSON.parse(raw);if(!Array.isArray(m))return;
       const action=m[0]===2?m[2]:m[0]===3?'Antwoord':'Foutantwoord';log(direction+' · '+action);
+      if(direction==='Robo Charge'&&m[0]===2&&m[2]==='GetDiagnostics'){
+        const p=m[3]||{};let locationHost='Onbekend';try{locationHost=new URL(String(p.location||'')).hostname||'Onbekend';}catch{}
+        state.remoteDiagnostics={messageId:String(m[1]),requestedAt:state.lastSeen,startTime:p.startTime||null,stopTime:p.stopTime||null,locationHost,fileName:null,responseAt:null};
+        log('Diagnose via Robo Charge',`Upload naar ${locationHost}`);
+      }
+      if(direction==='Homebox'&&m[0]===3&&state.remoteDiagnostics?.messageId===String(m[1])){
+        state.remoteDiagnostics={...state.remoteDiagnostics,fileName:m[2]?.fileName||null,responseAt:state.lastSeen};
+        log('Diagnosebestand aangekondigd',state.remoteDiagnostics.fileName||'Geen bestandsnaam');
+      }
       if(direction==='Homebox'&&m[0]===2)roundTripPending.set(m[1],{time:Date.now(),action:m[2]});
       if(direction==='Robo Charge'&&[3,4].includes(m[0])){const sent=roundTripPending.get(m[1]);if(sent){roundTripPending.delete(m[1]);if(sent.action==='StartTransaction'&&m[0]===3&&Number.isInteger(m[2]?.transactionId))state.transactionId=m[2].transactionId;state.roundTrips.unshift({time:new Date().toISOString(),action:sent.action,ms:Date.now()-sent.time,ok:m[0]===3});state.roundTrips=state.roundTrips.slice(0,120);}}
       if(direction!=='Homebox' || m[0]!==2)return;
@@ -47,7 +56,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
       if(m[2]==='StopTransaction'){state.activeTransaction=false;state.transactionId=null;}
     }catch{log('Onleesbaar bericht','Ongewijzigd doorgestuurd');}
   }
-  function localCommand(action,payload,timeout=action==='GetConfiguration'?30000:8000){
+  function localCommand(action,payload,timeout=['GetConfiguration','GetDiagnostics'].includes(action)?30000:8000){
     if(!active||active.down.readyState!==WebSocket.OPEN)throw Error('Homebox is niet verbonden');
     if(!['GetConfiguration','ChangeConfiguration','GetDiagnostics','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability','RemoteStartTransaction','RemoteStopTransaction','ClearCache'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
     const uid='ems-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
