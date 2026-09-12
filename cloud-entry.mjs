@@ -57,7 +57,13 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
     relay=await getRelay(id);
     ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRouteChanger:changeFleetRoute,fleetCommander:fleetCommand});
   }catch(error){if(ems)await ems.close();if(relay)await relay.close();await new Promise(resolve=>gateway.close(resolve));throw error;}
-  return {port:gateway.address().port,relay,ems,relays,close:async()=>{await new Promise(resolve=>gateway.close(resolve));await ems.close();for(const value of relays.values()){try{await (await value).close();}catch{}}}};
+  return {port:gateway.address().port,relay,ems,relays,close:async()=>{
+    // Stop accepting connections, then close the relays that keep the gateway open.
+    const gatewayClosed=new Promise(resolve=>gateway.close(resolve));
+    for(const value of relays.values()){try{await (await value).close();}catch{}}
+    await ems.close();
+    await gatewayClosed;
+  }};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const app=await startCloud();console.log(`LaadFix online proxy draait op poort ${app.port}`);const stop=async()=>{await app.close();process.exit();};process.on('SIGINT',stop);process.on('SIGTERM',stop);}
