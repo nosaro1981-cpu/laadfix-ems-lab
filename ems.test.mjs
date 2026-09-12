@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {defaults,calculate,validate,createEngine} from './ems.mjs';
+import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
 import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
@@ -52,6 +52,12 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
  e.set({...structuredClone(defaults),pvW:0});assert.equal(e.tick(6000).result.actualA,0);
  e.set({...structuredClone(defaults),mode:'fast'});assert.equal(e.tick(7000).result.actualA,0);assert.equal(e.tick(12000).result.actualA,16);
  e.set({...structuredClone(defaults),mode:'fast',phases:1});assert.equal(e.tick(13000).result.actualA,0);
+});
+test('Vier virtuele laders delen de beschikbare stroom en tonen meetwaarden',()=>{
+ const s={...structuredClone(defaults),mode:'fast',simulatedChargers:4,fuseA:50,limitA:32,homeW:[0,0,0],pvW:0};
+ const result={...calculate(s),actualA:10,energyWh:4000};
+ const fleet=simulatedFleet(s,result);assert.equal(fleet.length,4);assert.ok(fleet.every(row=>row.status==='Charging'));assert.ok(fleet.every(row=>row.offeredA===10&&row.measuredA===10));assert.equal(fleet.reduce((sum,row)=>sum+row.energyWh,0),4000);
+ s.simulatedChargers=2;const partial=simulatedFleet(s,result);assert.equal(partial.filter(row=>row.status==='Stand-by').length,2);
 });
 test('Geen netimport door solar-regeling, ook bij veel verschillende belastingen',()=>{
  for(let pv=0;pv<=15000;pv+=500)for(let home=0;home<=8000;home+=400){const s={...structuredClone(defaults),pvW:pv,homeW:[home,600,900]};const r=calculate(s);if(r.desiredA>0){assert.ok(r.gridW<=0.001);assert.ok(r.gridPhaseA.every(a=>a<=24.001));assert.ok(r.desiredA>=6);}}
