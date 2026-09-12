@@ -169,7 +169,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     }
   }
   async function relayCommand(action,payload){
-    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(['GetConfiguration','GetDiagnostics'].includes(action)?35000:10000)});
+    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(['GetConfiguration','GetDiagnostics'].includes(action)?125000:95000)});
     const value=await response.json();if(!response.ok)throw Error(value.error||'OCPP-opdracht mislukt');return value.result;
   }
   async function changeProxyRoute(upstream){
