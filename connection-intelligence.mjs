@@ -69,11 +69,13 @@ export function analyzeControllerLog(text){
   return {score,stats,facts,timeline,findings,analyzedAt:new Date().toISOString()};
 }
 
-const canonicalMeter=value=>{
+const meterName=value=>String(value||'').trim().replace(/[_-]+/g,' ').replace(/\s+/g,' ')||null;
+const meterKey=value=>{
   const text=String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  const match=text.match(/SDM(?:72D|630|230|120)/);
-  return match?.[0]||null;
+  const known=text.match(/(?:SDM[A-Z0-9]+|EM\d{2,4}|B2[34]|PRO\d{2,4})/);
+  return known?.[0]||text||null;
 };
+const meterDisplay=value=>{const name=meterName(value),key=meterKey(value);return key?.startsWith('SDM')?key:name;};
 
 export function normalizeControllerLog(value){
   return String(value||'').replaceAll(String.fromCharCode(0),'').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');
@@ -86,14 +88,31 @@ export function diagnosticAnalysisWindow(value,maxLength=250_000){
   return text.slice(0,side)+'\n[...midden ingekort...]\n'+text.slice(-side);
 }
 
+export function extractDiagnosticOverview(value){
+  const text=normalizeControllerLog(value),configuration={};
+  for(const match of text.matchAll(/"key"\s*:\s*"([^"\r\n]+)"\s*,\s*"readonly"\s*:\s*(?:true|false)\s*,\s*"value"\s*:\s*"([^"\r\n]*)"/gi))configuration[match[1]]=match[2];
+  const meters=[...text.matchAll(/KWH METER \[CH\]\[SERIAL\]\[TYPE\]:\[(\d+)\]\[([^\]]+)\]\[([^\]]+)\]/gi)].map(match=>({channel:match[1],serial:match[2],model:meterDisplay(match[3])}));
+  const activeMeters=[...new Map(meters.map(meter=>[`${meter.channel}:${meter.serial}:${meter.model}`,meter])).values()];
+  const configuredMeters=Object.entries(configuration).filter(([key,value])=>/^chg_KWH\d+$/i.test(key)&&!/^none(?:,|$)/i.test(value)).map(([key,value])=>({slot:key.replace(/\D/g,''),model:meterDisplay(value.split(',')[0]),address:value.split(',')[1]||null}));
+  const number=value=>value!==undefined&&value!==''&&Number.isFinite(Number(value))?Number(value):null;
+  const addressMismatches=configuredMeters.filter(meter=>Number(meter.address)!==Number(meter.slot)).map(meter=>({slot:Number(meter.slot),address:Number(meter.address),model:meter.model,source:'configuratie'}));
+  const observedAddressMismatches=activeMeters.map(meter=>({slot:Number(meter.channel)+1,address:null,model:meter.model,serial:meter.serial,source:'controllerlog'}));
+  for(const meter of observedAddressMismatches){const startup=[...text.matchAll(new RegExp(`Meter${meter.slot-1}:SN\\[${String(meter.serial).replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')}\\]Type\\[[^\\]]+\\]Speed\\[(\\d+)\\]Addr\\[(\\d+)\\]`,'gi'))].at(-1);meter.address=startup?Number(startup[2]):null;}
+  const observedMismatches=observedAddressMismatches.filter(meter=>meter.address!==null&&meter.address!==meter.slot);
+  const pgrid=[...text.matchAll(/PGrid\[([^\]]+)\]MIN\.I\[([^\]]+)\]STATION\[([^\]]+)\]INSTALLATION\[([^\]]+)\]SUPERVISOR\[([^\]]+)\]/gi)].at(-1),supervisorClientCount=number(configuration.grid_SupervisorClientCount),runtimeSupervisor=number(pgrid?.[5]);
+  const canErrors=(text.match(/CAN(?:BUS)?[^\r\n]*(?:BUS.?OFF|ERROR|ERR\[)/gi)||[]).length,termination=[...text.matchAll(/CAN(?:BUS)?[^\r\n]*(?:TERM(?:INATION)?|AFSLUIT)[^\r\n]*?(\d{2,3})\s*(?:OHM|Ω)/gi)].at(-1)?.[1]||null;
+  const loadBalancingDetected=(supervisorClientCount||0)>0||(runtimeSupervisor||0)>0||/PGrid\[[^\]]*(?:SUPERVISOR|CLIENT)/i.test(text);
+  return {activeMeters,activeMeterCount:activeMeters.length,configuredMeters,configuredMeterCount:configuredMeters.length,addressMismatches,observedAddressMismatches:observedMismatches,supervisorClientCount,runtimeSupervisor,numberOfConnectors:number(configuration.NumberOfConnectors),enabledChannels:number(configuration.chg_ChannelsEnabled),gridRole:configuration.grid_Role||null,gridCommunication:configuration.grid_CommChannel||null,gridRuntime:pgrid?{role:pgrid[1],minimumCurrent:number(pgrid[2]),stationCurrent:number(pgrid[3]),installationCurrent:number(pgrid[4]),supervisorCurrent:runtimeSupervisor}:null,loadBalancingDetected,canErrors,canTerminationOhm:termination?Number(termination):null,transport:configuration.com_ProtCh||null,protocol:configuration.com_ProtType||null,sampleIntervalSeconds:number(configuration.MeterValueSampleInterval),heartbeatSeconds:number(configuration.HeartbeatInterval)};
+}
+
 export function extractMeterIdentity(value,meterSetting=null){
   const text=normalizeControllerLog(value),pick=pattern=>[...text.matchAll(pattern)].at(-1)||null;
   const initialized=pick(/KWH METER \[CH\]\[SERIAL\]\[TYPE\]:\[(\d+)\]\[([^\]]+)\]\[([^\]]+)\]/gi);
   const startup=pick(/Meter\d+:SN\[([^\]]+)\]Type\[([^\]]+)\]Speed\[(\d+)\]Addr\[(\d+)\]Opt\[([^\]]+)\]/gi);
-  const detected=pick(/(?:Meter detected:\s*|KWH meter\s+)(SDM(?:72D|630|230|120))/gi);
+  const detected=pick(/(?:Meter detected:\s*|KWH meter\s+)([A-Za-z][A-Za-z0-9 _.-]{1,80}?)(?=\s+(?:ready|detected|online)\b|[\r\n]|$)/gi);
   const bootType=pick(/"meterType"\s*:\s*"([^"]+)"/gi),bootSerial=pick(/"meterSerialNumber"\s*:\s*"([^"]+)"/gi);
   const configured=pick(/"key"\s*:\s*"chg_KWH1"\s*,\s*"readonly"\s*:\s*(?:true|false)\s*,\s*"value"\s*:\s*"([^"]+)"/gi),configuration=String(meterSetting||configured?.[1]||''),parts=configuration.split(',');
-  const initializedModel=canonicalMeter(initialized?.[3]),detectedModel=canonicalMeter(detected?.[1]),reportedModel=canonicalMeter(bootType?.[1]);
+  const initializedModel=meterDisplay(initialized?.[3]),detectedModel=meterDisplay(detected?.[1]),reportedModel=meterDisplay(bootType?.[1]);
   const model=initializedModel||detectedModel||reportedModel||null;
   const serial=initialized?.[2]||bootSerial?.[1]||startup?.[1]||null;
   const address=startup?.[4]||parts[1]||null;
@@ -102,15 +121,16 @@ export function extractMeterIdentity(value,meterSetting=null){
   const successfulReads=(text.match(/KWH:AD\[[^\]]+\][^\r\n]*\bOK\b/gi)||[]).length;
   const timeouts=(text.match(/KWH:[^\r\n]*ERR\[TO\]/gi)||[]).length;
   const evidence=[initializedModel?'RS485-initialisatie met model en serienummer':null,reportedModel?'BootNotification met meterType en serienummer':null,successfulReads?`${successfulReads} geslaagde Modbus-uitlezingen`:null].filter(Boolean);
-  return {model,serial,channel:initialized?.[1]||null,address,baudrate,parity,stopBits,successfulReads,timeouts,initializedModel,reportedModel,configured:canonicalMeter(parts[0]),evidence,confidence:initializedModel&&serial&&successfulReads?'strong':model?'reported':'unknown'};
+  return {model,serial,channel:initialized?.[1]||null,address,baudrate,parity,stopBits,successfulReads,timeouts,initializedModel,reportedModel,configured:meterDisplay(parts[0]),evidence,confidence:initializedModel&&serial&&successfulReads?'strong':model?'reported':'unknown'};
 }
 
 export function assessMeterIdentity(text,meterSetting,analysis=null){
-  const configured=canonicalMeter(String(meterSetting||'').split(',')[0]);
+  const configured=meterDisplay(String(meterSetting||'').split(',')[0]);
   const physical=extractMeterIdentity(text,meterSetting);
   const observed=[...new Set([physical.initializedModel,physical.reportedModel,physical.model].filter(Boolean))];
-  const mismatch=!!configured&&observed.length>0&&!observed.includes(configured);
-  const confirmed=!!configured&&observed.includes(configured);
+  const configuredKey=meterKey(configured),observedKeys=observed.map(meterKey);
+  const mismatch=!!configuredKey&&observedKeys.length>0&&!observedKeys.includes(configuredKey);
+  const confirmed=!!configuredKey&&observedKeys.includes(configuredKey);
   const timeouts=Number(analysis?.stats?.meterTimeouts||0);
   let level='warning',label='Niet bevestigd',detail='Het ingestelde metertype is bekend, maar de controllerlog noemt het fysieke metermodel niet.';
   if(!configured){label='Geen meterconfiguratie';detail='chg_KWH1 ontbreekt of bevat geen herkenbaar Eastron-model.';}
