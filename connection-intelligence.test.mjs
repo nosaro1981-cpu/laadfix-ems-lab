@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,extractCellularIdentity} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractMeterIdentity,normalizeControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
@@ -31,4 +31,13 @@ Reader init error (32);0,1,2,1`;
  assert.ok(result.findings.some(item=>item.code==='WS_PONG_TIMEOUT'));
  assert.ok(result.findings.some(item=>item.code==='METER_TIMEOUT'));
  assert.ok(result.timeline.some(item=>item.type==='websocket'));
+});
+
+test('Grote Ecotap-diagnose herkent de actief uitgelezen meter onafhankelijk van de instelling',()=>{
+ const log='\0'.repeat(140000)+'Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[1]RG[FC00]R[1]OK\nKWH METER [CH][SERIAL][TYPE]:[0][21280066][Eastron SDM72D]\n'+
+  '[2,"1","BootNotification",{"meterType":"Eastron SDM72D","meterSerialNumber":"21280066"}]\n'+
+  '[3,"2",{"configurationKey":[{"key":"chg_KWH1","readonly":false,"value":"EASTR_SDM630,1,9600,N,1"}]}]'+'\n'.repeat(140000);
+ const clean=normalizeControllerLog(log),window=diagnosticAnalysisWindow(clean),meter=extractMeterIdentity(clean),assessment=assessMeterIdentity(clean,'EASTR_SDM630,1,9600,N,1',analyzeControllerLog(window));
+ assert.ok(window.length<=250000);assert.equal(meter.model,'SDM72D');assert.equal(meter.serial,'21280066');assert.equal(meter.address,'1');assert.equal(meter.baudrate,'9600');assert.equal(meter.successfulReads,1);assert.equal(meter.confidence,'strong');
+ assert.equal(assessment.configured,'SDM630');assert.deepEqual(assessment.observed,['SDM72D']);assert.equal(assessment.mismatch,true);
 });

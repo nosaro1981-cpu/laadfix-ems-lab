@@ -75,18 +75,49 @@ const canonicalMeter=value=>{
   return match?.[0]||null;
 };
 
+export function normalizeControllerLog(value){
+  return String(value||'').replaceAll(String.fromCharCode(0),'').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');
+}
+
+export function diagnosticAnalysisWindow(value,maxLength=250_000){
+  const text=normalizeControllerLog(value);
+  if(text.length<=maxLength)return text;
+  const side=Math.floor((maxLength-32)/2);
+  return text.slice(0,side)+'\n[...midden ingekort...]\n'+text.slice(-side);
+}
+
+export function extractMeterIdentity(value,meterSetting=null){
+  const text=normalizeControllerLog(value),pick=pattern=>[...text.matchAll(pattern)].at(-1)||null;
+  const initialized=pick(/KWH METER \[CH\]\[SERIAL\]\[TYPE\]:\[(\d+)\]\[([^\]]+)\]\[([^\]]+)\]/gi);
+  const startup=pick(/Meter\d+:SN\[([^\]]+)\]Type\[([^\]]+)\]Speed\[(\d+)\]Addr\[(\d+)\]Opt\[([^\]]+)\]/gi);
+  const detected=pick(/(?:Meter detected:\s*|KWH meter\s+)(SDM(?:72D|630|230|120))/gi);
+  const bootType=pick(/"meterType"\s*:\s*"([^"]+)"/gi),bootSerial=pick(/"meterSerialNumber"\s*:\s*"([^"]+)"/gi);
+  const configured=pick(/"key"\s*:\s*"chg_KWH1"\s*,\s*"readonly"\s*:\s*(?:true|false)\s*,\s*"value"\s*:\s*"([^"]+)"/gi),configuration=String(meterSetting||configured?.[1]||''),parts=configuration.split(',');
+  const initializedModel=canonicalMeter(initialized?.[3]),detectedModel=canonicalMeter(detected?.[1]),reportedModel=canonicalMeter(bootType?.[1]);
+  const model=initializedModel||detectedModel||reportedModel||null;
+  const serial=initialized?.[2]||bootSerial?.[1]||startup?.[1]||null;
+  const address=startup?.[4]||parts[1]||null;
+  const baudrate=startup?.[3]||parts[2]||null;
+  const parity=parts[3]||null,stopBits=parts[4]||null;
+  const successfulReads=(text.match(/KWH:AD\[[^\]]+\][^\r\n]*\bOK\b/gi)||[]).length;
+  const timeouts=(text.match(/KWH:[^\r\n]*ERR\[TO\]/gi)||[]).length;
+  const evidence=[initializedModel?'RS485-initialisatie met model en serienummer':null,reportedModel?'BootNotification met meterType en serienummer':null,successfulReads?`${successfulReads} geslaagde Modbus-uitlezingen`:null].filter(Boolean);
+  return {model,serial,channel:initialized?.[1]||null,address,baudrate,parity,stopBits,successfulReads,timeouts,initializedModel,reportedModel,configured:canonicalMeter(parts[0]),evidence,confidence:initializedModel&&serial&&successfulReads?'strong':model?'reported':'unknown'};
+}
+
 export function assessMeterIdentity(text,meterSetting,analysis=null){
   const configured=canonicalMeter(String(meterSetting||'').split(',')[0]);
-  const observed=[...new Set([...String(text||'').matchAll(/\bSDM(?:72D|630|230|120)\b/gi)].map(match=>canonicalMeter(match[0])).filter(Boolean))];
+  const physical=extractMeterIdentity(text,meterSetting);
+  const observed=[...new Set([physical.initializedModel,physical.reportedModel,physical.model].filter(Boolean))];
   const mismatch=!!configured&&observed.length>0&&!observed.includes(configured);
   const confirmed=!!configured&&observed.includes(configured);
   const timeouts=Number(analysis?.stats?.meterTimeouts||0);
   let level='warning',label='Niet bevestigd',detail='Het ingestelde metertype is bekend, maar de controllerlog noemt het fysieke metermodel niet.';
   if(!configured){label='Geen meterconfiguratie';detail='chg_KWH1 ontbreekt of bevat geen herkenbaar Eastron-model.';}
-  if(confirmed){level='ok';label='Model bevestigd';detail=`De controllerlog noemt ${configured}; dit komt overeen met chg_KWH1.`;}
+  if(confirmed){level='ok';label=physical.confidence==='strong'?'Meter actief uitgelezen':'Model bevestigd';detail=physical.confidence==='strong'?`${configured}, serienummer ${physical.serial}, antwoordt via Modbus (${physical.successfulReads} geslaagde uitlezingen).`:`De controllerlog noemt ${configured}; dit komt overeen met chg_KWH1.`;}
   if(mismatch){level='critical';label='Model komt niet overeen';detail=`Ingesteld: ${configured}. In de controllerlog waargenomen: ${observed.join(', ')}.`;}
   if(!observed.length&&timeouts){detail+=` Er zijn daarnaast ${timeouts} Modbus time-out${timeouts===1?'':'s'}, dus controleer model, adres en businstellingen op locatie.`;}
-  return {configured,observed,confirmed,mismatch,level,label,detail};
+  return {configured,observed,confirmed,mismatch,level,label,detail,physical};
 }
 
 const lastMatch=(text,patterns)=>{

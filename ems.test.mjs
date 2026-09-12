@@ -111,3 +111,16 @@ test('Meteridentiteit maakt geen modelgok bij alleen Modbus time-outs',()=>{
  const confirmed=assessMeterIdentity('KWH meter SDM72D ready','EASTR_SDM72D,1,9600,N,1',analysis);
  assert.equal(confirmed.confirmed,true);assert.equal(confirmed.level,'ok');
 });
+
+test('Lokale diagnose-ontvanger gebruikt een eenmalig token en levert online analyse op',async()=>{
+ let command=null;const fleet=[{id:'DIAGLOCAL',chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[{key:'chg_KWH1',value:'EASTR_SDM630,1,9600,N,1',readonly:false}]}];
+ const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{command={id,action,payload};return{fileName:'DIAGLOCALDiag123.xls'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
+ try{
+  let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGLOCAL',action:'diagnostics',localReceiverIp:'192.168.43.20',localReceiverPort:2121})});assert.equal(response.status,200);
+  const location=new URL(command.payload.location);assert.equal(location.protocol,'ftp:');assert.equal(location.hostname,'192.168.43.20');assert.equal(location.port,'2121');assert.match(location.username,/^[a-f0-9]{48}$/);assert.equal(location.password,'DIAGLOCAL');
+  const upload=`${base}/api/diagnostics-upload/${location.username}/${location.password}`;
+  response=await fetch(upload,{method:'PUT',body:'Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[1]RG[FC00]R[1]OK\nKWH METER [CH][SERIAL][TYPE]:[0][21280066][Eastron SDM72D]\n'});assert.equal(response.status,201);
+  response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});let report=(await response.json()).diagnostics.DIAGLOCAL;assert.equal(report.status,'Ontvangen');assert.equal(report.destination,'Lokale ontvanger (192.168.43.20)');assert.equal(report.meterIdentity.model,'SDM72D');assert.equal(report.meterIdentity.serial,'21280066');assert.equal(report.meterAssessment.mismatch,true);
+  response=await fetch(base+'/api/diagnostics-manual',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/octet-stream','X-Charger-Id':'DIAGLOCAL','X-File-Name':encodeURIComponent('handmatig.xls')},body:'KWH METER [CH][SERIAL][TYPE]:[0][9988][Eastron SDM630]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);report=(await response.json()).report;assert.equal(report.source,'Handmatige browserupload');assert.equal(report.meterIdentity.model,'SDM630');assert.equal(report.meterIdentity.serial,'9988');
+ }finally{await app.close();}
+});

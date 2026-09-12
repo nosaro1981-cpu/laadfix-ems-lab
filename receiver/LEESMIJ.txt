@@ -1,0 +1,11 @@
+LaadFix diagnose-ontvanger voor Windows
+
+1. Verbind de laptop en de Homebox met hetzelfde lokale netwerk. Een telefoonhotspot kan ook.
+2. Dubbelklik op Installeren.cmd en keur de Windows-melding goed.
+3. De ontvanger start automatisch en opent LaadFix met het juiste lokale adres.
+4. Open het laadstation, kies Controllerdiagnose en klik op '5 min via lokale ontvanger'.
+
+De Homebox stuurt het bestand lokaal via FTP. De ontvanger stuurt het daarna via HTTPS naar de LaadFix-proxy. Het diagnosebestand blijft ook staan in:
+%LOCALAPPDATA%\LaadFix Receiver\data
+
+Als de Homebox geen verbinding maakt, controleer dan of de hotspot communicatie tussen aangesloten apparaten toestaat. Laptop en Homebox moeten hetzelfde lokale netwerk gebruiken.
