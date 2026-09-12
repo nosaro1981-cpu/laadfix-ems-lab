@@ -77,6 +77,7 @@ test('Lokale webinterface weigert externe aanvragen en ongeldige bestemmingen',a
  r=await fetch(base+'/api/led',{method:'POST',headers:{'Content-Type':'application/json',Origin:base},body:JSON.stringify({action:'on'})});assert.equal(r.status,400);
  assert.equal(privateIPv4('127.0.0.1'),false);assert.equal(privateIPv4('192.168.1.50'),true);assert.equal(privateIPv4('localhost'),false);
  assert.equal((await fetch(base+'/')).status,200);assert.equal((await fetch(base+'/app.mjs')).status,200);
+ assert.equal((await fetch(base+'/configuration-help.mjs')).status,200);
  assert.equal((await fetch(base+'/dashboard.css')).status,200);
  }finally{await app.close();}
 });
