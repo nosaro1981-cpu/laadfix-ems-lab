@@ -33,6 +33,9 @@ export class OcppGateway {
     const selected = requested.find(value => /^ocpp1\.6j?$/i.test(value));
     const headers = new Headers();
     if (selected) headers.set('Sec-WebSocket-Protocol', selected);
+    headers.set('Report-To','');
+    headers.set('NEL','');
+    headers.set('Alt-Svc','');
     return new Response(null, {status:101, webSocket:client, headers});
   }
 
