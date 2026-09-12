@@ -25,6 +25,7 @@ export function colourForStatus(status, chargerConnected=true, backendConnected=
   if (['Preparing','Charging','SuspendedEV','SuspendedEVSE','Finishing'].includes(status)) return 'blue';
   return 'red';
 }
+const ocppDateTime=value=>new Date(value).toISOString().replace(/\.\d{3}Z$/,'Z');
 export function extractMeterReadings(meterValues,lastMeterValues=null,now=Date.now()){
   const groups=Array.isArray(meterValues?.meterValue)?meterValues.meterValue:[];
   const samples=groups.flatMap(group=>(Array.isArray(group?.sampledValue)?group.sampledValue:[]).map(v=>({...v,timestamp:group.timestamp||meterValues?.time||lastMeterValues})));
@@ -105,12 +106,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     if (!publicName && !diagnosticFtpUrl) throw Error('Er is geen bereikbaar uploadadres ingesteld. Gebruik Robo Charge of configureer de diagnose-ontvanger.');
     const existing = diagnosticReports.get(chargerId);
     if (existing && !['Ontvangen', 'Mislukt'].includes(existing.status) && Date.now() - Date.parse(existing.requestedAt) < 15 * 60000) throw Error('Er wordt al een diagnose-upload gevolgd. Bekijk eerst de uploadstatus.');
-    const token = randomBytes(24).toString('hex'), requestedAt = new Date().toISOString();
+    const token = randomBytes(24).toString('hex'), requestedAt = ocppDateTime(Date.now());
     const ticket = { chargerId, requestedAt, expiresAt: Date.now() + 15 * 60000, fileName: null };
     diagnosticTokens.set(token, ticket);
     diagnosticReports.set(chargerId, { chargerId, status: 'Aangevraagd', requestedAt, minutes, locationReady: true });
     try {
-      const result = await stationCommand(chargerId, 'GetDiagnostics', { location: diagnosticFtpUrl || `https://${publicName}/api/diagnostics-upload/${token}/${encodeURIComponent(chargerId)}`, retries: 2, retryInterval: 60, startTime: new Date(Date.now() - minutes * 60000).toISOString(), stopTime: requestedAt });
+      const result = await stationCommand(chargerId, 'GetDiagnostics', { location: diagnosticFtpUrl || `https://${publicName}/api/diagnostics-upload/${token}/${encodeURIComponent(chargerId)}`, retries: 2, retryInterval: 60, startTime: ocppDateTime(Date.now() - minutes * 60000), stopTime: requestedAt });
       if (result?.errorCode) throw Error(result.errorDescription || result.errorCode);
       ticket.fileName = result?.fileName || null;
       // The upload may finish before the OCPP response arrives.
@@ -259,7 +260,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(action==='diagnostics'){
           if(!publicName)throw Error('Voor diagnose-upload is een openbaar dashboardadres nodig');
           diagnosticToken=randomBytes(24).toString('hex');diagnosticLocation=diagnosticFtpUrl||`https://${publicName}/api/diagnostics-upload/${diagnosticToken}/${encodeURIComponent(chargerId)}`;
-          const requestedAt=new Date().toISOString();diagnosticTokens.set(diagnosticToken,{chargerId,requestedAt,expiresAt:Date.now()+15*60_000,fileName:null});diagnosticReports.set(chargerId,{chargerId,status:'Aangevraagd',requestedAt,minutes:5,locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=ocppDateTime(Date.now());diagnosticTokens.set(diagnosticToken,{chargerId,requestedAt,expiresAt:Date.now()+15*60_000,fileName:null});diagnosticReports.set(chargerId,{chargerId,status:'Aangevraagd',requestedAt,minutes:5,locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
@@ -273,7 +274,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           remoteStop:['RemoteStopTransaction',{transactionId:Number(body.transactionId??item.transactionId)}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
-          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:new Date(Date.now()-5*60_000).toISOString(),stopTime:new Date().toISOString()}]
+          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:ocppDateTime(Date.now()-5*60_000),stopTime:ocppDateTime(Date.now())}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
