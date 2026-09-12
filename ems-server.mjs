@@ -108,7 +108,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const diagnosticTokens=new Map(),diagnosticReports=new Map(),importedRemoteDiagnostics=new Set();
   const deferBackgroundReadings=id=>{
     const report=diagnosticReports.get(id);
-    return busy||!!(report&&report.expiresAt>Date.now()&&['Aangevraagd','FTP-upload wordt gevolgd','Upload verwacht','FTP-bestand wordt gezocht','Opdracht geaccepteerd'].includes(report.status));
+    return !!(report&&report.expiresAt>Date.now()&&(report.status==='Aangevraagd'||report.quietDiagnostics===true&&['FTP-upload wordt gevolgd','Upload verwacht','FTP-bestand wordt gezocht','Opdracht geaccepteerd'].includes(report.status)));
   };
   const diagnosticFtpUrl=String(process.env.DIAGNOSTICS_FTP_URL||'').trim();
   const diagnosticFtpPollMs=Math.max(15000,Number(process.env.DIAGNOSTICS_FTP_POLL_MS)||15000);
@@ -290,7 +290,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(variant!=='default')diagnosticLocation=await diagnosticLocationForRequest(diagnosticFtpUrl,variant);
           const minutes=body.allTime===true?null:Number(body.minutes??5);
           if(minutes!==null&&(!Number.isInteger(minutes)||minutes<1||minutes>1440))throw Error('Ongeldig diagnosetijdvak');
-          const requestedAt=ocppDateTime(Date.now()),stopTime=minutes===null?undefined:requestedAt,startTime=minutes===null?undefined:ocppDateTime(Date.now()-minutes*60_000),ticket={chargerId,requestedAt,startTime,stopTime,minutes,ftpVariant:variant,source:'LaadFix',destination:diagnosticDestination,locationHost:diagnosticFtpHost||publicName,expiresAt:Date.now()+15*60_000,fileName:null};diagnosticTokens.set(diagnosticToken,ticket);diagnosticReports.set(chargerId,{...ticket,status:'Aangevraagd',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=ocppDateTime(Date.now()),stopTime=minutes===null?undefined:requestedAt,startTime=minutes===null?undefined:ocppDateTime(Date.now()-minutes*60_000),ticket={chargerId,requestedAt,startTime,stopTime,minutes,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,source:'LaadFix',destination:diagnosticDestination,locationHost:diagnosticFtpHost||publicName,expiresAt:Date.now()+15*60_000,fileName:null};diagnosticTokens.set(diagnosticToken,ticket);diagnosticReports.set(chargerId,{...ticket,status:'Aangevraagd',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
