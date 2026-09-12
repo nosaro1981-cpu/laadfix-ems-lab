@@ -66,6 +66,18 @@ test('Lokale serviceopdracht gaat alleen naar de Homebox en verwerkt antwoord', 
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 
+test('Ecotap DataTransfer voor meteridentificatie bereikt de Homebox', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'METER',upstream:'ws://127.0.0.1:'+backend.address().port+'/METER',meterLogFile:null});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/METER','ocpp1.6');await once(charger,'open');[up]=await connected;
+  const incoming=once(charger,'message'),request=fetch('http://127.0.0.1:'+app.monitorPort+'/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'DataTransfer',payload:{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}})});
+  const call=JSON.parse((await incoming)[0].toString());assert.equal(call[2],'DataTransfer');assert.deepEqual(call[3],{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'});charger.send(JSON.stringify([3,call[1],{status:'UnknownMessageId'}]));
+  const response=await request;assert.equal(response.status,200);assert.equal((await response.json()).result.status,'UnknownMessageId');
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
+
 test('Handmatig backendherstel laat de Homeboxsocket open', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'REPAIR',upstream:'ws://127.0.0.1:'+backend.address().port+'/REPAIR',meterLogFile:null,backendRetryDelaysMs:[5000]});

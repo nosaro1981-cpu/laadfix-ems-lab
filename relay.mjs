@@ -85,7 +85,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
   }
   function localCommand(action,payload,timeout=['GetConfiguration','GetDiagnostics'].includes(action)?30000:8000){
     if(!active||active.down.readyState!==WebSocket.OPEN)throw Error('Homebox is niet verbonden');
-    if(!['GetConfiguration','ChangeConfiguration','GetDiagnostics','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability','RemoteStartTransaction','RemoteStopTransaction','ClearCache'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
+    if(!['GetConfiguration','ChangeConfiguration','GetDiagnostics','SetChargingProfile','ClearChargingProfile','TriggerMessage','Reset','UnlockConnector','ChangeAvailability','RemoteStartTransaction','RemoteStopTransaction','ClearCache','DataTransfer'].includes(action))throw Error('Niet toegestane lokale OCPP-opdracht');
     const uid='ems-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
     const started=new Date().toISOString();state.lastLocalCommand={action,status:'Verzonden',started};log('Lokaal → Homebox',action);
     return new Promise((resolve,reject)=>{
