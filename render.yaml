@@ -21,3 +21,5 @@ services:
         sync: false
       - key: DIAGNOSTICS_FTP_URL
         sync: false
+      - key: DIAGNOSTICS_FTP_POLL_MS
+        value: 60000
