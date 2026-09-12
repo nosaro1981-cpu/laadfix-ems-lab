@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { Client as FtpClient } from 'basic-ftp';
+import { diagnosticLocation as diagnosticLocationForRequest, testDiagnosticFtp } from './diagnostic-ftp.mjs';
 import { createEngine, simulatedFleet } from './ems.mjs';
 import { createRecoveryMonitor } from './power-recovery.mjs';
 import { connectionIntelligence, analyzeControllerLog, assessMeterIdentity, extractCellularIdentity } from './connection-intelligence.mjs';
@@ -250,6 +251,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         return send(202,{job});
       }
       if(req.url==='/api/analyze-log'){logAnalysis=analyzeControllerLog(body.log);return send(200,{logAnalysis});}
+      if(req.url==='/api/diagnostics-ftp-test')return send(200,await testDiagnosticFtp(diagnosticFtpUrl));
       if(req.url==='/api/diagnostics-import'){
         if(!diagnosticFtpUrl)throw Error('Er is geen diagnose-FTP ingesteld');
         const chargerId=String(body.id||''),fileName=String(body.fileName||'').trim();
@@ -280,7 +282,11 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(action==='diagnostics'){
           if(!publicName&&!diagnosticFtpUrl)throw Error('Voor diagnose-upload is een eigen LaadFix-opslag nodig');
           diagnosticToken=randomBytes(24).toString('hex');diagnosticLocation=diagnosticFtpUrl||`https://${publicName}/api/diagnostics-upload/${diagnosticToken}/${encodeURIComponent(chargerId)}`;
-          const stopTime=ocppDateTime(Date.now()),startTime=ocppDateTime(Date.now()-5*60_000),requestedAt=stopTime,ticket={chargerId,requestedAt,startTime,stopTime,minutes:5,source:'LaadFix',destination:diagnosticDestination,locationHost:diagnosticFtpHost||publicName,expiresAt:Date.now()+15*60_000,fileName:null};diagnosticTokens.set(diagnosticToken,ticket);diagnosticReports.set(chargerId,{...ticket,status:'Aangevraagd',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const variant=String(body.ftpVariant||'default');
+          if(variant!=='default')diagnosticLocation=await diagnosticLocationForRequest(diagnosticFtpUrl,variant);
+          const minutes=body.allTime===true?null:Number(body.minutes??5);
+          if(minutes!==null&&(!Number.isInteger(minutes)||minutes<1||minutes>1440))throw Error('Ongeldig diagnosetijdvak');
+          const requestedAt=ocppDateTime(Date.now()),stopTime=minutes===null?undefined:requestedAt,startTime=minutes===null?undefined:ocppDateTime(Date.now()-minutes*60_000),ticket={chargerId,requestedAt,startTime,stopTime,minutes,ftpVariant:variant,source:'LaadFix',destination:diagnosticDestination,locationHost:diagnosticFtpHost||publicName,expiresAt:Date.now()+15*60_000,fileName:null};diagnosticTokens.set(diagnosticToken,ticket);diagnosticReports.set(chargerId,{...ticket,status:'Aangevraagd',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
