@@ -80,16 +80,15 @@ test('Open sockets worden verstoord gemeld wanneer een backofficeopdracht geen a
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 
-test('Twee onbeantwoorde leesopdrachten laten de laadpaalverbinding open', {timeout:5000},async()=>{
+test('Een onbeantwoorde backofficeopdracht vernieuwt automatisch alleen de backendverbinding', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
- const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'RECOVER',upstream:'ws://127.0.0.1:'+backend.address().port+'/RECOVER',meterLogFile:null,backendCommandTimeoutMs:20});
- let charger,up;
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'RECOVER',upstream:'ws://127.0.0.1:'+backend.address().port+'/RECOVER',meterLogFile:null,backendCommandTimeoutMs:20,backendAutoRecoveryDelayMs:5});
+ let charger,up,up2;
  try{
   const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/RECOVER','ocpp1.6');await once(charger,'open');[up]=await connected;
-  up.send('[2,"probe-a","TriggerMessage",{"requestedMessage":"Heartbeat"}]');await once(charger,'message');await new Promise(resolve=>setTimeout(resolve,30));
-  up.send('[2,"probe-b","TriggerMessage",{"requestedMessage":"StatusNotification","connectorId":1}]');await once(charger,'message');await new Promise(resolve=>setTimeout(resolve,35));
-  assert.equal(app.state.chargerConnected,true);assert.equal(charger.readyState,WebSocket.OPEN);assert.equal(app.state.commandHealth.consecutiveTimeouts,2);assert.equal(app.state.commandHealth.autoRecoveryAt,null);assert.equal(app.state.connectionTimeline.some(row=>row.type==='stale_socket_recovery'),false);
- }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+  const reconnected=once(backend,'connection');up.send('[2,"probe-a","TriggerMessage",{"requestedMessage":"Heartbeat"}]');await once(charger,'message');[up2]=await reconnected;
+  assert.equal(app.state.chargerConnected,true);assert.equal(charger.readyState,WebSocket.OPEN);assert.ok(app.state.commandHealth.autoRecoveryAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_auto_recovery'));assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_auto_reconnect'));
+ }finally{charger?.terminate();up?.terminate();up2?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 
 test('Ecotap DataTransfer voor meteridentificatie bereikt de Homebox', {timeout:5000},async()=>{
