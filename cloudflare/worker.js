@@ -8,7 +8,10 @@ export class OcppGateway {
     this.backend = null;
     this.backendPromise = null;
     this.queue = [];
-    this.compatibilityTimers = new Map();
+    this.compatibilityApplied = false;
+    ctx.blockConcurrencyWhile(async()=>{
+      this.compatibilityApplied = (await ctx.storage.get('legacyPingDisabled')) === true;
+    });
   }
 
   async fetch(request) {
@@ -16,19 +19,15 @@ export class OcppGateway {
     const client = pair[0];
     const charger = pair[1];
     const url = new URL(request.url);
-    charger.serializeAttachment({path:url.pathname + url.search,recoveryId:null});
+    const recoveryId = this.compatibilityApplied ? null : `legacy-${crypto.randomUUID()}`;
+    charger.serializeAttachment({path:url.pathname + url.search,recoveryId});
     // Durable Objects answer WebSocket protocol ping frames at the edge. This
     // is required by older Ecotap firmware before it sends BootNotification.
     this.ctx.acceptWebSocket(charger, ['charger']);
-    const timer = setTimeout(()=>{
-      if (charger.readyState !== WebSocket.OPEN || this.activeCharger === charger) return;
-      const attachment = charger.deserializeAttachment() || {};
-      const recoveryId = `legacy-${crypto.randomUUID()}`;
-      charger.serializeAttachment({...attachment,recoveryId});
+    if (recoveryId) {
       charger.send(JSON.stringify([2,recoveryId,'ChangeConfiguration',{key:'WebSocketPingInterval',value:'0'}]));
       console.log(JSON.stringify({event:'legacy_config_sent'}));
-    },1500);
-    this.compatibilityTimers.set(charger,timer);
+    }
     const requested = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     const selected = requested.find(value => /^ocpp1\.6j?$/i.test(value));
@@ -62,9 +61,6 @@ export class OcppGateway {
   }
 
   async webSocketMessage(ws, message) {
-    const timer = this.compatibilityTimers.get(ws);
-    if (timer) clearTimeout(timer);
-    this.compatibilityTimers.delete(ws);
     const attachment = ws.deserializeAttachment() || {};
     if (typeof message === 'string' && attachment.recoveryId) {
       try {
@@ -72,7 +68,11 @@ export class OcppGateway {
         if (Array.isArray(frame) && [3,4].includes(frame[0]) && frame[1] === attachment.recoveryId) {
           const accepted = frame[0] === 3 && frame[2]?.status === 'Accepted';
           console.log(JSON.stringify({event:accepted?'legacy_config_accepted':'legacy_config_rejected'}));
-          if (accepted) ws.close(1012,'Pingcompatibiliteit toegepast');
+          if (accepted) {
+            this.compatibilityApplied = true;
+            await this.ctx.storage.put('legacyPingDisabled',true);
+            ws.close(1012,'Pingcompatibiliteit toegepast');
+          }
           return;
         }
       } catch {}
@@ -105,9 +105,6 @@ export class OcppGateway {
   }
 
   webSocketClose(ws, code, reason) {
-    const timer = this.compatibilityTimers.get(ws);
-    if (timer) clearTimeout(timer);
-    this.compatibilityTimers.delete(ws);
     if (ws === this.activeCharger) {
       this.activeCharger = null;
       try { this.backend?.close(code || 1000, reason || 'Laadstation gesloten'); } catch {}
