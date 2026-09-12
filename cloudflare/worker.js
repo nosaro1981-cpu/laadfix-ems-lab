@@ -1,5 +1,6 @@
 const EXPECTED_PATH = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/RBC-0000032';
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
+const BACKEND_STALE_MS = 150_000;
 
 export class OcppGateway {
   constructor(ctx) {
@@ -8,10 +9,8 @@ export class OcppGateway {
     this.backend = null;
     this.backendPromise = null;
     this.queue = [];
-    this.compatibilityApplied = false;
-    ctx.blockConcurrencyWhile(async()=>{
-      this.compatibilityApplied = (await ctx.storage.get('legacyPingDisabled')) === true;
-    });
+    this.backendOpenedAt = 0;
+    this.lastBackendMessageAt = 0;
   }
 
   async fetch(request) {
@@ -19,15 +18,10 @@ export class OcppGateway {
     const client = pair[0];
     const charger = pair[1];
     const url = new URL(request.url);
-    const recoveryId = this.compatibilityApplied ? null : `legacy-${crypto.randomUUID()}`;
-    charger.serializeAttachment({path:url.pathname + url.search,recoveryId});
-    // Durable Objects answer WebSocket protocol ping frames at the edge. This
-    // is required by older Ecotap firmware before it sends BootNotification.
+    charger.serializeAttachment({path:url.pathname + url.search});
+    // Keep the charger connected at the edge while Render is replaced. The
+    // backend leg is reopened independently when it becomes stale or closes.
     this.ctx.acceptWebSocket(charger, ['charger']);
-    if (recoveryId) {
-      charger.send(JSON.stringify([2,recoveryId,'ChangeConfiguration',{key:'WebSocketPingInterval',value:'0'}]));
-      console.log(JSON.stringify({event:'legacy_config_sent'}));
-    }
     const requested = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     const selected = requested.find(value => /^ocpp1\.6j?$/i.test(value));
@@ -50,11 +44,22 @@ export class OcppGateway {
       const backend = response.webSocket;
       backend.accept();
       this.backend = backend;
+      this.backendOpenedAt = Date.now();
+      this.lastBackendMessageAt = Date.now();
       backend.addEventListener('message', event => {
+        if (this.backend !== backend) return;
+        this.lastBackendMessageAt = Date.now();
         if (this.activeCharger?.readyState === WebSocket.OPEN) this.activeCharger.send(event.data);
       });
-      backend.addEventListener('close', event => this.closeActive(event.code || 1011, event.reason || 'Backend gesloten'));
-      backend.addEventListener('error', () => this.closeActive(1011, 'Backendfout'));
+      const detach = (event, kind) => {
+        if (this.backend !== backend) return;
+        this.backend = null;
+        this.backendOpenedAt = 0;
+        this.lastBackendMessageAt = 0;
+        console.log(JSON.stringify({event:kind,code:event?.code||null,reason:event?.reason||null}));
+      };
+      backend.addEventListener('close', event => detach(event, 'backend_closed'));
+      backend.addEventListener('error', event => detach(event, 'backend_error'));
       for (const message of this.queue.splice(0)) backend.send(message);
       console.log(JSON.stringify({event:'backend_open',status:response.status}));
       return backend;
@@ -65,21 +70,6 @@ export class OcppGateway {
 
   async webSocketMessage(ws, message) {
     const attachment = ws.deserializeAttachment() || {};
-    if (typeof message === 'string' && attachment.recoveryId) {
-      try {
-        const frame = JSON.parse(message);
-        if (Array.isArray(frame) && [3,4].includes(frame[0]) && frame[1] === attachment.recoveryId) {
-          const accepted = frame[0] === 3 && frame[2]?.status === 'Accepted';
-          console.log(JSON.stringify({event:accepted?'legacy_config_accepted':'legacy_config_rejected'}));
-          if (accepted) {
-            this.compatibilityApplied = true;
-            await this.ctx.storage.put('legacyPingDisabled',true);
-            ws.close(1012,'Pingcompatibiliteit toegepast');
-          }
-          return;
-        }
-      } catch {}
-    }
     if (this.activeCharger && this.activeCharger !== ws) {
       ws.close(1000, 'Andere verbinding actief');
       return;
@@ -90,9 +80,17 @@ export class OcppGateway {
         if (candidate !== ws) candidate.close(1000, 'Andere verbinding gekozen');
       }
     }
-    if (this.backend?.readyState === WebSocket.OPEN) {
+    const backendSilentFor = Date.now() - Math.max(this.lastBackendMessageAt, this.backendOpenedAt);
+    if (this.backend?.readyState === WebSocket.OPEN && backendSilentFor <= BACKEND_STALE_MS) {
       this.backend.send(message);
       return;
+    }
+    if (this.backend) {
+      try { this.backend.close(1012, 'Backendverbinding vernieuwen'); } catch {}
+      this.backend = null;
+      this.backendOpenedAt = 0;
+      this.lastBackendMessageAt = 0;
+      console.log(JSON.stringify({event:'backend_stale',silentMs:backendSilentFor}));
     }
     if (this.queue.length >= 50) {
       this.closeActive(1011, 'Wachtrij vol');
@@ -103,7 +101,7 @@ export class OcppGateway {
       await this.openBackend(attachment.path || EXPECTED_PATH);
     } catch (error) {
       console.log(JSON.stringify({event:'backend_error',message:String(error?.message||error)}));
-      this.closeActive(1011, 'OCPP-backend niet bereikbaar');
+      this.backend = null;
     }
   }
 
