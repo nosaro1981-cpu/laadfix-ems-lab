@@ -15,51 +15,27 @@ export default {
       return new Response('OCPP WebSocket vereist', { status: 403 });
     }
 
-    // Some Ecotap firmware uses OCPP 1.6J without advertising the optional
-    // WebSocket subprotocol. Bridge that legacy handshake to strict OCPP 1.6.
     const requestedProtocols = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
-    const selectedProtocol = requestedProtocols.find(value => /^ocpp1\.6j?$/i.test(value)) || null;
     console.log(JSON.stringify({event:'ocpp_ingress',path:url.pathname,protocols:requestedProtocols,country:request.cf?.country||null,colo:request.cf?.colo||null}));
-    const upstreamHeaders = new Headers({Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'ocpp1.6'});
-    const authorization = request.headers.get('Authorization');
-    if (authorization) upstreamHeaders.set('Authorization', authorization);
-    let upstreamResponse;
+
+    // Return the upgraded origin response directly. Cloudflare then proxies
+    // protocol ping/pong and close frames at the edge while Render still sees
+    // every OCPP data frame for the dashboard and Robo Charge relay.
     try {
-      upstreamResponse = await fetch(RENDER_ORIGIN + url.pathname + url.search, {headers:upstreamHeaders});
+      const upstreamHeaders = new Headers({Upgrade:'websocket'});
+      const protocolHeader = request.headers.get('Sec-WebSocket-Protocol');
+      const authorization = request.headers.get('Authorization');
+      if (protocolHeader) upstreamHeaders.set('Sec-WebSocket-Protocol', protocolHeader);
+      if (authorization) upstreamHeaders.set('Authorization', authorization);
+      const upstreamResponse = await fetch(RENDER_ORIGIN + url.pathname + url.search, {
+        headers:upstreamHeaders,
+      });
+      console.log(JSON.stringify({event:upstreamResponse.webSocket?'backend_proxy_open':'backend_rejected',status:upstreamResponse.status}));
+      return upstreamResponse;
     } catch (error) {
       console.log(JSON.stringify({event:'backend_error',message:String(error?.message||error)}));
       return new Response('OCPP-backend tijdelijk niet bereikbaar', {status:503});
     }
-    const backend = upstreamResponse.webSocket;
-    if (!backend) {
-      console.log(JSON.stringify({event:'backend_rejected',status:upstreamResponse.status}));
-      return new Response('OCPP-backend weigerde WebSocket', {status:502});
-    }
-    backend.accept();
-    console.log(JSON.stringify({event:'backend_open',status:upstreamResponse.status}));
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const charger = pair[1];
-    charger.accept();
-    let closed = false;
-    const closeBoth = (code = 1011, reason = 'Proxyverbinding gesloten') => {
-      if (closed) return;
-      closed = true;
-      try { charger.close(code, reason); } catch {}
-      try { backend?.close(code, reason); } catch {}
-    };
-    charger.addEventListener('message', event => {
-      if (backend.readyState === 1) backend.send(event.data);
-      else closeBoth(1011, 'Backend niet beschikbaar');
-    });
-    charger.addEventListener('close', event => {console.log(JSON.stringify({event:'charger_close',code:event.code,reason:event.reason||''}));closeBoth(event.code || 1000, 'Laadstation gesloten');});
-    charger.addEventListener('error', () => closeBoth());
-    backend.addEventListener('message', event => { if (!closed) charger.send(event.data); });
-    backend.addEventListener('close', event => closeBoth(event.code || 1011, 'Backend gesloten'));
-    backend.addEventListener('error', () => closeBoth());
-    const headers = new Headers();
-    if (selectedProtocol) headers.set('Sec-WebSocket-Protocol', selectedProtocol);
-    return new Response(null, {status: 101, webSocket: client, headers});
   },
 };
