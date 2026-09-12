@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -52,6 +52,12 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
  e.set({...structuredClone(defaults),pvW:0});assert.equal(e.tick(6000).result.actualA,0);
  e.set({...structuredClone(defaults),mode:'fast'});assert.equal(e.tick(7000).result.actualA,0);assert.equal(e.tick(12000).result.actualA,16);
  e.set({...structuredClone(defaults),mode:'fast',phases:1});assert.equal(e.tick(13000).result.actualA,0);
+});
+test('Primaire dashboardstatus neemt OCPP-diagnose uit de actuele vloot over',()=>{
+ const charger={id:'RBC-1',chargerConnected:true,backendConnected:true};
+ const diagnostics={bootAccepted:false,chargerTrafficSeen:true,backendTrafficSeen:true};
+ const merged=mergePrimaryFleetState(charger,[{id:'RBC-1',chargerConnected:true,backendConnected:true,status:'Available',connectionDiagnostics:diagnostics}]);
+ assert.equal(merged.status,'Available');assert.equal(merged.connectionDiagnostics,diagnostics);assert.equal(merged.relayReachable,true);
 });
 test('Vier virtuele laders delen de beschikbare stroom en tonen meetwaarden',()=>{
  const s={...structuredClone(defaults),mode:'fast',simulatedChargers:4,fuseA:50,limitA:32,homeW:[0,0,0],pvW:0};
