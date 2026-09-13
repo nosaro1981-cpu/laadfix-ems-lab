@@ -61,6 +61,11 @@ export class OcppGateway {
   }
 
   async fetch(request) {
+    if (new URL(request.url).pathname === '/_wake') {
+      const charger = this.connectedCharger();
+      if (charger) await this.scheduleBackendReconnect();
+      return Response.json({ok:true,chargerConnected:!!charger,backendConnected:this.backend?.readyState===WebSocket.OPEN});
+    }
     const pair = new WebSocketPair();
     const client = pair[0];
     const charger = pair[1];
@@ -182,23 +187,32 @@ export class OcppGateway {
 }
 
 export default {
-  async scheduled(_controller, _env, ctx) {
-    ctx.waitUntil(fetch(RENDER_ORIGIN + '/healthz', {
+  async scheduled(_controller, env, ctx) {
+    const gateway = env.OCPP_GATEWAY.get(env.OCPP_GATEWAY.idFromName(EXPECTED_PATH));
+    ctx.waitUntil(Promise.all([fetch(RENDER_ORIGIN + '/healthz', {
       headers:{'User-Agent':'LaadFix-OCPP-healthcheck'},
       cf:{cacheTtl:0,cacheEverything:false},
     }).then(response => console.log(JSON.stringify({event:'backend_health',status:response.status})))
-      .catch(error => console.log(JSON.stringify({event:'backend_health_error',message:String(error?.message||error)}))));
+      .catch(error => console.log(JSON.stringify({event:'backend_health_error',message:String(error?.message||error)}))),
+      gateway.fetch('https://ocpp-gateway.internal/_wake')
+        .then(response => response.json())
+        .then(status => console.log(JSON.stringify({event:'gateway_wake',...status})))
+        .catch(error => console.log(JSON.stringify({event:'gateway_wake_error',message:String(error?.message||error)})))
+    ]));
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    const id = env.OCPP_GATEWAY.idFromName(EXPECTED_PATH);
+    if (url.pathname === '/health') {
+      return env.OCPP_GATEWAY.get(id).fetch('https://ocpp-gateway.internal/_wake');
+    }
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket' || url.pathname !== EXPECTED_PATH) {
       return new Response('OCPP WebSocket vereist', {status:403});
     }
     const protocols = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     console.log(JSON.stringify({event:'ocpp_ingress',path:url.pathname,protocols,country:request.cf?.country||null,colo:request.cf?.colo||null}));
-    const id = env.OCPP_GATEWAY.idFromName(url.pathname);
     return env.OCPP_GATEWAY.get(id).fetch(request);
   },
 };

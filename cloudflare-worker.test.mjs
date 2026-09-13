@@ -53,3 +53,19 @@ test('Cloudflare gateway vervangt ook een stille backendverbinding zonder laderb
   assert.equal(closed,true);
   assert.equal(opened,1);
 });
+
+test('Cloudflare wake activeert herstel voor een bewaarde Homeboxsocket', async () => {
+  const alarms=[];
+  const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'})};
+  const ctx={
+    getWebSockets:()=>[charger],
+    waitUntil:promise=>promise.catch(()=>{}),
+    storage:{setAlarm:async value=>alarms.push(value),deleteAlarm:async()=>{}}
+  };
+  const gateway=new OcppGateway(ctx);
+  const response=await gateway.fetch(new Request('https://ocpp-gateway.internal/_wake'));
+  const status=await response.json();
+  assert.equal(status.chargerConnected,true);
+  assert.equal(status.backendConnected,false);
+  assert.equal(alarms.length,1);
+});
