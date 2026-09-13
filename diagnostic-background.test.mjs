@@ -17,7 +17,7 @@ for (const quietDiagnostics of [false, true]) test(`automatic meter requests res
   const app=await startEMS({port:0,hardware:true,ledHardware:false,publicHost:'quiet.example.test',authUser:'test',authPassword:'test',relayMonitorPort:relay.address().port,meterPollIntervalMs:500,fleetProvider:()=>[station],fleetCommander:async(id,action,payload)=>{diagnostic=payload;return{fileName:'QUIET-TESTDiag1.xls'};}});
   const base=`http://127.0.0.1:${app.port}`,authorization='Basic '+Buffer.from('test:test').toString('base64');
   try {
-    const request=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:station.id,action:'diagnostics',quietDiagnostics})});
+    const request=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:station.id,action:'diagnostics',quietDiagnostics,enhancedDebug:false})});
     assert.equal(request.status,200);
     await new Promise(resolve=>setTimeout(resolve,650));
     assert.equal(readings.length,quietDiagnostics?0:1,'ordinary uploads keep background communication; only the explicit quiet experiment pauses it');
