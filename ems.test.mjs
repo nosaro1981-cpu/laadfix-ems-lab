@@ -191,6 +191,18 @@ test('Niet beantwoorde configuratie blokkeert de diagnose niet en laat debug ong
  finally{await app.close();}
 });
 
+test('Ontbrekend GetDiagnostics-antwoord gaat door zodra het nieuwe FTP-bestand verschijnt',async()=>{
+ const fleet=[{id:'FTP-FALLBACK',chargerConnected:true,backendConnected:true,status:'Available',configuration:[]}],calls=[];let lists=0,app;
+ try{
+  app=await startEMS({port:0,host:'127.0.0.1',hardware:false,authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:1,diagnosticConfigurationTimeoutMs:10,diagnosticFtpUrlOverride:'ftp://test:test@127.0.0.1:9/',diagnosticFtpLister:async()=>++lists===1?[]:[{name:'FTP-FALLBACKDiag1.xls',size:4096,isFile:true,modifiedAt:new Date()}],fleetProvider:()=>fleet,fleetCommander:async(id,action)=>{calls.push(action);if(action==='GetConfiguration')throw Error('Geen configuratieantwoord');if(action==='GetDiagnostics')throw Error('Geen antwoord van de Homebox binnen 120 seconden');return{status:'Accepted'};}});
+  const base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
+  const response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'FTP-FALLBACK',action:'diagnostics',durationSeconds:10,fastScan:true,debugModules:['modbus']})});
+  assert.equal(response.status,202);
+  let report;for(let i=0;i<40;i++){await new Promise(resolve=>setTimeout(resolve,10));report=(await(await fetch(base+'/api/state',{headers:{Authorization:authorization}})).json()).diagnostics['FTP-FALLBACK'];if(report?.fileName)break;}
+  assert.equal(report.fileName,'FTP-FALLBACKDiag1.xls');assert.equal(report.fileDiscoveredWithoutResponse,true);assert.equal(report.progress.phase,'uploading');assert.equal(report.error,null);assert.equal(calls.filter(action=>action==='GetDiagnostics').length,1);
+ }finally{if(app)await app.close();}
+});
+
 test('Lokale upload-time-out herstelt debug en geeft een nieuwe diagnose vrij',async()=>{
  const original=DIAGNOSTIC_DEBUG_BASE,calls=[],fleet=[{id:'LOCALTIMEOUT',chargerConnected:true,backendConnected:true,status:'Available'}];
  const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:1,diagnosticLocalTimeoutMs:25,fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{calls.push({action,payload});if(action==='GetConfiguration')return{configurationKey:[{key:'chg_Debug',value:original}]};if(action==='GetDiagnostics')return{fileName:'NOUPLOAD.xls'};return{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64'),request=()=>fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'LOCALTIMEOUT',action:'diagnostics',durationSeconds:30,localReceiverIp:'192.168.1.20',debugModules:['modbus']})});

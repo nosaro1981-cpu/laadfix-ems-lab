@@ -140,7 +140,7 @@ export function mergePrimaryFleetState(charger, fleet) {
   return primary ? { ...charger, ...primary, relayReachable: true } : charger;
 }
 
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000,diagnosticConfigurationTimeoutMs=10_000}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000,diagnosticConfigurationTimeoutMs=10_000,diagnosticFtpUrlOverride=null,diagnosticFtpLister=null}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -160,7 +160,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const report=diagnosticReports.get(id);
     return !!(report&&report.expiresAt>Date.now()&&(report.status==='Aangevraagd'||report.quietDiagnostics===true&&['FTP-upload wordt gevolgd','Upload verwacht','FTP-bestand wordt gezocht','Opdracht geaccepteerd'].includes(report.status)));
   };
-  const diagnosticFtpUrl=String(process.env.DIAGNOSTICS_FTP_URL||'').trim();
+  const diagnosticFtpUrl=String(diagnosticFtpUrlOverride??process.env.DIAGNOSTICS_FTP_URL??'').trim();
   const diagnosticFtpPollMs=Math.max(2000,Number(process.env.DIAGNOSTICS_FTP_POLL_MS)||5000);
   const diagnosticFtpTimeoutMs=Math.max(60000,Number(process.env.DIAGNOSTICS_FTP_TIMEOUT_MS)||180000);
   const diagnosticFtpMaxAttempts=Math.max(2,Math.ceil(diagnosticFtpTimeoutMs/diagnosticFtpPollMs));
@@ -176,6 +176,26 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const diagnosticTransferEstimateMs=chargerId=>{const samples=(diagnosticHistories.get(chargerId)||[]).map(row=>Date.parse(row.receivedAt)-Date.parse(row.stopTime||row.requestedAt)).filter(value=>Number.isFinite(value)&&value>5_000&&value<10*60_000).slice(0,6).sort((a,b)=>a-b);if(!samples.length)return 45_000;return Math.max(15_000,Math.min(120_000,samples[Math.floor(samples.length/2)]));};
   const diagnosticFtpAccess=async client=>{const url=new URL(diagnosticFtpUrl);await client.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});return{directory:decodeURIComponent(url.pathname||'/').replace(/\/$/,'')||'/'};};
   const diagnosticRemotePath=(directory,file)=>(directory==='/'?'':directory)+'/'+file;
+  const diagnosticFilePattern=chargerId=>{const prefix=String(chargerId).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return new RegExp(`^${prefix}(?:Diag|[-_]diag[-_]).*\\.(?:xls|txt|log)$`,'i');};
+  const listDiagnosticFtpEntries=async()=>{
+    if(typeof diagnosticFtpLister==='function')return await diagnosticFtpLister();
+    const client=new FtpClient(8000);try{const{directory}=await diagnosticFtpAccess(client);return await client.list(directory);}finally{client.close();}
+  };
+  const diagnosticEntryVersion=entry=>`${Number(entry?.size)||0}:${entry?.modifiedAt instanceof Date?entry.modifiedAt.getTime():String(entry?.rawModifiedAt||'')}`;
+  const snapshotDiagnosticFtp=async chargerId=>{if(!diagnosticFtpUrl)return null;try{return new Map((await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(chargerId).test(row.name)).map(row=>[row.name,diagnosticEntryVersion(row)]));}catch{return null;}};
+  const waitForNewDiagnosticFtpFile=async(ticket,baseline,timeoutMs=120_000)=>{
+    if(!diagnosticFtpUrl||ticket.localReceiver||!(baseline instanceof Map))return null;
+    const deadline=Date.now()+timeoutMs;
+    while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending&&!ticket.fileName){
+      try{
+        const candidates=(await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(ticket.chargerId).test(row.name)&&baseline.get(row.name)!==diagnosticEntryVersion(row));
+        const newest=candidates.sort((a,b)=>(b.modifiedAt?.getTime?.()||0)-(a.modifiedAt?.getTime?.()||0)||Number(b.size||0)-Number(a.size||0))[0];
+        if(newest)return newest;
+      }catch{}
+      await new Promise(resolve=>setTimeout(resolve,Math.min(3000,Math.max(1,deadline-Date.now()))));
+    }
+    return null;
+  };
   const validStationId=value=>/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(String(value||''));
   const persistStationRegistry=async()=>{if(!diagnosticFtpUrl)return false;const client=new FtpClient(15000);try{const{directory}=await diagnosticFtpAccess(client),content=Buffer.from(JSON.stringify([...registeredStationIds].sort()));await client.uploadFrom(Readable.from([content]),diagnosticRemotePath(directory,stationRegistryFile));return true;}finally{client.close();}};
   const loadStationRegistry=async()=>{if(!diagnosticFtpUrl||typeof fleetRegistrar!=='function')return;const client=new FtpClient(15000),chunks=[];try{const{directory}=await diagnosticFtpAccess(client),sink=new Writable({write(chunk,encoding,callback){chunks.push(Buffer.from(chunk));callback();}});await client.downloadTo(sink,diagnosticRemotePath(directory,stationRegistryFile));const ids=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(Array.isArray(ids))for(const stationId of ids){if(!validStationId(stationId))continue;registeredStationIds.add(stationId);await fleetRegistrar(stationId);void loadDiagnosticHistory(stationId);}}catch{}finally{client.close();}};
@@ -547,7 +567,46 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           }
           const captureMs=diagnosticCaptureDurationMs(ticket,diagnosticCaptureMs);
           const captureStartedAt=Date.now();updateDiagnosticProgress(chargerId,ticket,{phase:'capturing',label:'Gerichte logging verzamelen',percent:20,phaseStartedAt:new Date(captureStartedAt).toISOString(),phaseEndsAt:new Date(captureStartedAt+captureMs).toISOString(),estimatedCompleteAt:new Date(captureStartedAt+captureMs+(ticket.transferEstimateMs||100_000)+20_000).toISOString()},{status:'Gerichte logging verzamelen',transport:ticket.localReceiver?'Lokale FTP + HTTPS':'LaadFix FTP',debugRestoreStatus:'Wordt na ontvangst automatisch hersteld'});
-          setTimeout(async()=>{try{if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;const result=await fleetCommander(chargerId,'GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime,stopTime:requestedAt});ticket.fileName=result?.fileName||null;if(ticket.fileName&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(chargerId,ticket);if(ticket.fileName&&ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);if(ticket.fileName&&ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug direct herstellen',percent:61},{status:'Diagnosebestand aangemaakt · debug herstellen'});await restoreDiagnosticDebug(ticket);}if(!diagnosticTokens.has(ticket.token))return;updateDiagnosticProgress(chargerId,ticket,{phase:ticket.fileName?'uploading':'failed',label:ticket.fileName?'Homebox verstuurt het bestand':'Geen bestand ontvangen',percent:ticket.fileName?65:100,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.fileName?(ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd'):'Mislukt',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus});if(!ticket.fileName){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Oorspronkelijke debug herstellen',percent:94});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Geen diagnosebestand ontvangen',percent:100},{status:'Mislukt',debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}}catch(error){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Diagnose mislukt',percent:100},{status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}},captureMs).unref();
+          setTimeout(async()=>{
+            try{
+              if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
+              updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});
+              const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);
+              ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;
+              const baseline=await snapshotDiagnosticFtp(chargerId);
+              const payload={location:diagnosticLocation,retries:2,retryInterval:60,startTime,stopTime:requestedAt};
+              const commandOutcome=fleetCommander(chargerId,'GetDiagnostics',payload).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
+              const ftpOutcome=ticket.localReceiver?null:waitForNewDiagnosticFtpFile(ticket,baseline).then(entry=>({kind:'ftp',entry}));
+              updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Homebox en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
+              let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome,result=null;
+              if(outcome.kind==='response'){
+                result=outcome.result;
+                ticket.fileName=result?.fileName||null;
+              }else if(outcome.kind==='ftp'&&outcome.entry){
+                ticket.fileName=outcome.entry.name;
+                ticket.fileDiscoveredWithoutResponse=true;
+              }
+              if(!ticket.fileName&&outcome.kind==='error'&&ftpOutcome){
+                updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:60,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
+                outcome=await ftpOutcome;
+                if(outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
+              }
+              if(!ticket.fileName&&outcome.kind==='response'&&ftpOutcome){
+                outcome=await ftpOutcome;
+                if(outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
+              }
+              if(!ticket.fileName){
+                const command=await commandOutcome;
+                throw Error(command.kind==='error'?`${command.error.message}. Er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');
+              }
+              if(!ticket.localReceiver)scheduleFtpDiagnosticDownload(chargerId,ticket);else scheduleLocalDiagnosticTimeout(ticket);
+              if(ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug direct herstellen',percent:61},{status:'Diagnosebestand gevonden · debug herstellen'});await restoreDiagnosticDebug(ticket);}
+              if(!diagnosticTokens.has(ticket.token))return;
+              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus,error:null});
+            }catch(error){
+              await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');
+            }
+          },captureMs).unref();
           setTimeout(()=>restoreDiagnosticDebug(ticket),12*60_000).unref();
           const durationLabel=ticket.durationSeconds<60?`${ticket.durationSeconds} seconden`:ticket.durationSeconds===60?'1 minuut':`${ticket.durationSeconds/60} minuten`;
           return send(202,{serviceResult:{status:originalDebug?'Gerichte logging gestart':'Standaardlog gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),configurationWarning||'Volledige actuele configuratie gelezen',originalDebug?'Originele chg_Debug veilig bewaard':'Debuginstelling veilig ongewijzigd gelaten',originalDebug?'Alleen gekozen modules op hun veilige maximum gezet':'Standaardlogging gebruikt',`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:originalDebug?'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.':'De diagnose loopt door zonder configuratiewijzigingen.'}});
