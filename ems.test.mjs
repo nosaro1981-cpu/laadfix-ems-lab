@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -57,6 +57,11 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
 test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
  const original='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0';
  const maximum=maximizeDiagnosticDebug(original);assert.match(maximum,/warn=1/);assert.match(maximum,/events=1/);for(const key of ['gsm','com','ocpp','eth','grid','ctrl','general','sensors','fw','modbus','canbus','sys'])assert.match(maximum,new RegExp(`${key}=7`));
+});
+test('Gerichte diagnose verhoogt alleen gekozen modules boven het basisprofiel',()=>{
+ const profile=selectDiagnosticDebug(['modbus','sensors','canbus']);
+ for(const key of ['modbus','sensors','canbus','ocpp'])assert.match(profile,new RegExp(`${key}=7`));
+ assert.match(profile,/gsm=3/);assert.match(profile,/ctrl=3/);assert.match(profile,/eth=1/);assert.match(profile,/sys=0/);
 });
 test('Primaire dashboardstatus neemt OCPP-diagnose uit de actuele vloot over',()=>{
  const charger={id:'RBC-1',chargerConnected:true,backendConnected:true};
@@ -134,7 +139,27 @@ test('Lokale diagnose-ontvanger gebruikt een eenmalig token en levert online ana
 test('Uitgebreide lokale diagnose herstelt chg_Debug na de upload',async()=>{
  const original='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0',calls=[],fleet=[{id:'DIAGMAX',chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'}]}];
  const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:10,fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{calls.push({action,payload});if(action==='GetConfiguration')return payload.key?{configurationKey:[]}:{configurationKey:[{key:'chg_Debug',value:original}]};return action==='GetDiagnostics'?{fileName:'DIAGMAX.xls'}:{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
- try{let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGMAX',action:'diagnostics',localReceiverIp:'192.168.1.20',localReceiverPort:2121})});assert.equal(response.status,202);for(let i=0;i<30&&!calls.some(row=>row.action==='GetDiagnostics');i++)await new Promise(resolve=>setTimeout(resolve,10));const request=calls.find(row=>row.action==='GetDiagnostics'),maximum=calls.find(row=>row.action==='ChangeConfiguration');assert.ok(request);assert.match(maximum.payload.value,/modbus=7/);const location=new URL(request.payload.location);response=await fetch(`${base}/api/diagnostics-upload/${location.username}/${location.password}`,{method:'PUT',body:'KWH METER [CH][SERIAL][TYPE]:[0][123][Eastron SDM72D]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);assert.equal(calls.at(-1).action,'ChangeConfiguration');assert.equal(calls.at(-1).payload.value,original);response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});const report=(await response.json()).diagnostics.DIAGMAX;assert.equal(report.debugRestoreStatus,'Originele debuginstelling hersteld');}
+ try{let response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'DIAGMAX',action:'diagnostics',localReceiverIp:'192.168.1.20',localReceiverPort:2121,debugModules:['modbus','sensors']})});assert.equal(response.status,202);for(let i=0;i<30&&!calls.some(row=>row.action==='GetDiagnostics');i++)await new Promise(resolve=>setTimeout(resolve,10));const request=calls.find(row=>row.action==='GetDiagnostics'),maximum=calls.find(row=>row.action==='ChangeConfiguration');assert.ok(request);assert.match(maximum.payload.value,/modbus=7/);assert.match(maximum.payload.value,/sensors=7/);assert.match(maximum.payload.value,/canbus=3/);const location=new URL(request.payload.location);response=await fetch(`${base}/api/diagnostics-upload/${location.username}/${location.password}`,{method:'PUT',body:'KWH METER [CH][SERIAL][TYPE]:[0][123][Eastron SDM72D]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);assert.equal(calls.at(-1).action,'ChangeConfiguration');assert.equal(calls.at(-1).payload.value,original);response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});const report=(await response.json()).diagnostics.DIAGMAX;assert.equal(report.debugRestoreStatus,'Originele debuginstelling hersteld');}
+ finally{await app.close();}
+});
+
+test('Lopende diagnose blokkeert dubbele opdrachten en ongeldige selecties',async()=>{
+ const original='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0',fleet=[{id:'LOCKED',chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false}];
+ const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:1000,fleetProvider:()=>fleet,fleetCommander:async(id,action)=>action==='GetConfiguration'?{configurationKey:[{key:'chg_Debug',value:original}]}:{status:'Accepted'}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64'),request=body=>fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ try{let response=await request({id:'LOCKED',action:'diagnostics',durationSeconds:30,debugModules:['modbus']});assert.equal(response.status,202);response=await request({id:'LOCKED',action:'diagnostics',durationSeconds:30,debugModules:['canbus']});assert.equal(response.status,409);assert.match((await response.json()).error,/loopt al een diagnose/);response=await request({id:'LOCKED',action:'diagnostics',durationSeconds:10,debugModules:['onbekend']});assert.equal(response.status,409);}
+ finally{await app.close();}
+});
+
+test('Diagnose weigert lege, onbekende en te lange keuzes',async()=>{
+ const fleet=[{id:'VALIDATE',chargerConnected:true,backendConnected:true,status:'Available'}],app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',fleetProvider:()=>fleet,fleetCommander:async()=>({status:'Accepted'})}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64'),request=body=>fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ try{assert.equal((await request({id:'VALIDATE',action:'diagnostics',durationSeconds:10,debugModules:['modbus']})).status,400);assert.equal((await request({id:'VALIDATE',action:'diagnostics',durationSeconds:30,debugModules:[]})).status,400);assert.equal((await request({id:'VALIDATE',action:'diagnostics',durationSeconds:30,debugModules:['onbekend']})).status,400);}
+ finally{await app.close();}
+});
+
+test('Mislukte voorbereiding wordt vrijgegeven en als gestopt getoond',async()=>{
+ const original=DIAGNOSTIC_DEBUG_BASE,fleet=[{id:'RETRY',chargerConnected:true,backendConnected:true,status:'Available'}],calls=[];
+ const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',fleetProvider:()=>fleet,fleetCommander:async(id,action)=>{calls.push(action);if(action==='GetConfiguration')return calls.filter(value=>value==='GetConfiguration').length<3?{configurationKey:[]}:{configurationKey:[{key:'chg_Debug',value:original}]};return{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64'),request=()=>fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'RETRY',action:'diagnostics',durationSeconds:30,debugModules:['modbus']})});
+ try{let response=await request();assert.equal(response.status,400);let state=await(await fetch(base+'/api/state',{headers:{Authorization:authorization}})).json();assert.equal(state.diagnostics.RETRY.progress.phase,'failed');response=await request();assert.equal(response.status,202);}
  finally{await app.close();}
 });
 
