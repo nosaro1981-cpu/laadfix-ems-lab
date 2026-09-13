@@ -136,7 +136,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   let connectionSamples=[],logAnalysis=null;
   let liveControl=false,lastSentLimit=null,lastControlError=null,lastControlResult=null,capabilities=null,serviceResult=null,networkResult=null,lastMeterRequest=0,meterRequestResult=null;
   const watchdogRequested=new Set();
-  const diagnosticTokens=new Map(),diagnosticReports=new Map(),diagnosticHistories=new Map(),diagnosticHistoryLoads=new Map(),diagnosticFiles=new Map(),importedRemoteDiagnostics=new Set(),scheduledFtpFiles=new Set(),pendingDiagnosticRestores=new Map(),diagnosticRestoreLoads=new Map();
+  const diagnosticTokens=new Map(),diagnosticReports=new Map(),diagnosticHistories=new Map(),diagnosticHistoryLoads=new Map(),diagnosticFiles=new Map(),importedRemoteDiagnostics=new Set(),scheduledFtpFiles=new Set(),activeFtpTickets=new Map(),pendingDiagnosticRestores=new Map(),diagnosticRestoreLoads=new Map();
   const releaseDiagnosticTicket=ticket=>{if(!ticket)return;if(ticket.token)diagnosticTokens.delete(ticket.token);else for(const[token,value]of diagnosticTokens)if(value===ticket)diagnosticTokens.delete(token);};
   const updateDiagnosticProgress=(chargerId,ticket,progress,extra={})=>{ticket.progress={...(ticket.progress||{}),...progress,updatedAt:new Date().toISOString()};diagnosticReports.set(chargerId,{...(diagnosticReports.get(chargerId)||ticket),...ticket,...extra,progress:ticket.progress});};
   const deferBackgroundReadings=id=>{
@@ -169,6 +169,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const loadDiagnosticHistory=chargerId=>{if(diagnosticHistoryLoads.has(chargerId))return diagnosticHistoryLoads.get(chargerId);const task=(async()=>{if(!diagnosticFtpUrl){diagnosticHistories.set(chargerId,[]);return [];}const client=new FtpClient(15000),chunks=[];try{const{directory}=await diagnosticFtpAccess(client),sink=new Writable({write(chunk,encoding,callback){chunks.push(Buffer.from(chunk));callback();}});await client.downloadTo(sink,diagnosticRemotePath(directory,diagnosticHistoryFile(chargerId)));const rows=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!Array.isArray(rows))throw Error('Ongeldige diagnosegeschiedenis');rows.sort((a,b)=>Date.parse(b.receivedAt||b.requestedAt)-Date.parse(a.receivedAt||a.requestedAt));diagnosticHistories.set(chargerId,rows);if(rows[0]&&!diagnosticReports.has(chargerId))diagnosticReports.set(chargerId,rows[0]);return rows;}catch{diagnosticHistories.set(chargerId,[]);return [];}finally{client.close();}})();diagnosticHistoryLoads.set(chargerId,task);return task;};
   const persistDiagnosticHistory=async chargerId=>{if(!diagnosticFtpUrl)return false;const client=new FtpClient(15000);try{const{directory}=await diagnosticFtpAccess(client),content=Buffer.from(JSON.stringify(diagnosticHistories.get(chargerId)||[]));await client.uploadFrom(Readable.from([content]),diagnosticRemotePath(directory,diagnosticHistoryFile(chargerId)));return true;}finally{client.close();}};
   const persistDiagnosticText=async(chargerId,report,content)=>{if(!diagnosticFtpUrl)return null;const client=new FtpClient(15000),textFileName=diagnosticTextFileName(chargerId,report),text=Buffer.from(downloadableDiagnosticText(content),'utf8');try{const{directory}=await diagnosticFtpAccess(client);await client.uploadFrom(Readable.from([text]),diagnosticRemotePath(directory,textFileName));return textFileName;}finally{client.close();}};
+  const requestFtpAbort=async ticket=>{if(!diagnosticFtpUrl||!ticket?.fileName)return false;const client=new FtpClient(8000);try{const{directory}=await diagnosticFtpAccess(client),fileName=String(ticket.fileName).split(/[\\/]/).at(-1),marker=`.laadfix-stop-${fileName}.req`;await client.uploadFrom(Readable.from([Buffer.from(new Date().toISOString())]),diagnosticRemotePath(directory,marker));return true;}finally{client.close();}};
   const loadPersistedDiagnosticText=async textFileName=>{if(!diagnosticFtpUrl||!/^[A-Za-z0-9._-]{1,180}\.txt$/i.test(String(textFileName||'')))return null;const client=new FtpClient(15000),chunks=[];let bytes=0;try{const{directory}=await diagnosticFtpAccess(client),sink=new Writable({write(chunk,encoding,callback){bytes+=chunk.length;if(bytes>5*1024*1024)return callback(Error('Tekstlog is groter dan 5 MB'));chunks.push(Buffer.from(chunk));callback();}});await client.downloadTo(sink,diagnosticRemotePath(directory,textFileName));return Buffer.concat(chunks).toString('utf8');}finally{client.close();}};
   const rememberDiagnosticReport=async(chargerId,report)=>{diagnosticReports.set(chargerId,report);if(report?.status!=='Ontvangen')return report;await loadDiagnosticHistory(chargerId);const rows=diagnosticHistories.get(chargerId)||[],confirmedMeterIdentity=confirmedMeterIdentityFor(report,rows),stored=confirmedMeterIdentity?{...report,confirmedMeterIdentity}:report,key=`${stored.receivedAt||''}:${stored.fileName||''}`,history=[stored,...rows.filter(item=>`${item.receivedAt||''}:${item.fileName||''}`!==key)];diagnosticHistories.set(chargerId,history);try{await persistDiagnosticHistory(chargerId);stored.archiveStatus=diagnosticFtpUrl?'Bewaard in centrale diagnosegeschiedenis':'Alleen tijdens deze serversessie bewaard';}catch(error){stored.archiveStatus='Centrale opslag mislukt: '+error.message;}diagnosticReports.set(chargerId,stored);return stored;};
   void loadDiagnosticHistory(charger.id);
@@ -210,6 +211,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const scheduleKey=`${chargerId}:${ticket.fileName}`;
     if(scheduledFtpFiles.has(scheduleKey))return;
     scheduledFtpFiles.add(scheduleKey);
+    activeFtpTickets.set(chargerId,ticket);
     let attempts=0,lastSize=null,stable=0;
     updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Online upload volgen',percent:65,estimatedCompleteAt:new Date(Date.now()+Math.min(60_000,ticket.transferEstimateMs||45_000)).toISOString()});
     const run=async()=>{
@@ -243,7 +245,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             diagnosticFiles.set(chargerId,{fileName,content});
             await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.debugRestoreStatus});
             try{await client.remove(remote);}catch{}
-            releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);
+            releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);
             return;
           }
         }
@@ -258,13 +260,13 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const restored=await restoreDiagnosticDebug(ticket);
         await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.originalDebug?(ticket.debugRestored||restored?'Originele debuginstelling hersteld':ticket.debugRestoreStatus):null});
         try{await client.remove(remote);}catch{}
-        releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);
+        releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);
         return;
       }catch(error){
         const failed=attempts>=diagnosticFtpMaxAttempts;
         if(failed&&ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94,estimatedCompleteAt:new Date(Date.now()+10_000).toISOString()},{status:'Debuginstelling herstellen na overdrachtsfout'});await restoreDiagnosticDebug(ticket);}
         updateDiagnosticProgress(chargerId,ticket,{phase:failed?'failed':'uploading',label:failed?'Online upload mislukt':'Wachten op diagnosebestand',percent:failed?100:Math.min(84,65+attempts),estimatedCompleteAt:new Date(Date.now()+Math.max(15_000,(diagnosticFtpMaxAttempts-attempts)*diagnosticFtpPollMs)).toISOString()},{status:failed?'Mislukt':'Online upload wordt gevolgd',error:String(error.message||'FTP-fout').replace(diagnosticFtpUrl,'FTP-server'),ftpAttempt:attempts,debugRestoreStatus:ticket.debugRestoreStatus});
-        if(failed){releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);}else setTimeout(run,diagnosticFtpPollMs).unref();
+        if(failed){releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);}else setTimeout(run,diagnosticFtpPollMs).unref();
       }finally{client.close();}
     };
     setTimeout(run,Math.min(5000,diagnosticFtpPollMs)).unref();
@@ -288,8 +290,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       }
     }catch{}finally{client.close();}
   };
-  setTimeout(()=>void recoverOrphanedFtpDiagnostics(),15000).unref();
-  setInterval(()=>void recoverOrphanedFtpDiagnostics(),60000).unref();
+  // Oude of afgebroken FTP-bestanden worden nooit vanzelf als een nieuwe diagnose hervat.
   const restoreDiagnosticDebug=async ticket=>{if(!ticket?.originalDebug||ticket.debugRestored||ticket.debugRestoreBusy)return false;ticket.debugRestoreBusy=true;try{const result=await fleetCommander(ticket.chargerId,'ChangeConfiguration',{key:'chg_Debug',value:ticket.originalDebug});ticket.debugRestoreStatus=result?.status||'Onbekend';if(result?.status==='Accepted'){ticket.debugRestored=true;await clearPendingDiagnosticRestore(ticket.chargerId);return true;}return false;}catch(error){ticket.debugRestoreStatus='Mislukt: '+error.message;return false;}finally{ticket.debugRestoreBusy=false;}};
   const waitForDiagnosticConnection=async ticket=>{const deadline=Date.now()+10*60_000;while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending){const item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===ticket.chargerId);if(item?.chargerConnected)return true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Wachten op Homeboxverbinding',percent:54,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'Diagnose gepauzeerd · hervat automatisch zodra de Homebox terug is',error:null});await new Promise(resolve=>setTimeout(resolve,5000));}return false;};
   const failDiagnosticTicket=async(ticket,error,label='Diagnose mislukt')=>{if(!ticket||ticket.ending)return false;ticket.ending=true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94,estimatedCompleteAt:new Date(Date.now()+10_000).toISOString()},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'failed',label,percent:100},{status:'Mislukt',error,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);return true;};
@@ -439,9 +440,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         await refreshHardware();return send(200,{result,fleet:charger.fleet});
       }
       if(req.url==='/api/diagnostics-finish'){
-        const chargerId=String(body.id||''),ticket=[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
+        const chargerId=String(body.id||''),ticket=activeFtpTickets.get(chargerId)||[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
         if(!ticket)throw Error('Er loopt geen diagnose voor dit laadstation');
         ticket.fastScan=true;ticket.finishRequested=true;
+        try{ticket.ftpAbortRequested=await requestFtpAbort(ticket);}catch{ticket.ftpAbortRequested=false;}
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens afronden',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:'Handmatig afronden aangevraagd'});
         return send(202,{status:ticket.livePreview?'De huidige compacte gegevens worden opgeslagen':'LaadFix leest nu de nieuwste 20 kB en rondt daarna af'});
       }
