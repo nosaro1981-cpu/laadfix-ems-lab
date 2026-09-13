@@ -245,24 +245,34 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         stable=entry.size===lastSize?stable+1:0;lastSize=entry.size;
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
-        if(ticket.fastScan&&entry.size>=1024&&(entry.size!==ticket.previewSourceSize||ticket.finishRequested)){
-          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Live diagnosegegevens uitlezen',percent:82,estimatedCompleteAt:new Date(Date.now()+5000).toISOString()},{status:'Live gegevens analyseren'});
+        if(ticket.fastScan&&entry.size>=1024&&(entry.size>=captureLimitBytes||ticket.finishRequested)){
+          // A growing FTP file has no stable EOF. Stop the Ecotap writer first,
+          // otherwise a preview can leave a hanging RETR session and the
+          // upload keeps growing beyond the configured compact limit.
+          ticket.finishRequested=true;
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · overdracht afsluiten',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+5000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
+          try{ticket.ftpAbortRequested=await requestFtpAbort(ticket);}catch{ticket.ftpAbortRequested=false;}
+          if(!ticket.ftpAbortRequested)throw Error('Veilige stop wordt opnieuw geprobeerd');
+          await new Promise(resolve=>setTimeout(resolve,400));
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
           const previewClient=new FtpClient(8000),chunks=[];let previewBytes=0;
           try{
             await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
-            const sink=new Writable({write(chunk,encoding,callback){const remaining=captureLimitBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}if(previewBytes>=captureLimitBytes){const stop=Error('Compacte diagnosegrens bereikt');stop.code='SMART_CAPTURE_COMPLETE';return callback(stop);}callback();}});
-            try{await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-captureLimitBytes));}catch(error){if(error.code!=='SMART_CAPTURE_COMPLETE'&&!/Compacte diagnosegrens/.test(error.message))throw error;}
+            const sink=new Writable({write(chunk,encoding,callback){const remaining=captureLimitBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}callback();}});
+            await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-captureLimitBytes));
           }finally{previewClient.close();}
-          const hadLivePreview=Number(ticket.previewSourceSize||0)>=1024;
           const content=Buffer.concat(chunks),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:true,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens beschikbaar',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
-          if((entry.size>=captureLimitBytes&&hadLivePreview)||ticket.finishRequested){
-            const report={...preview,status:'Ontvangen',progress:{phase:'complete',label:ticket.finishRequested?'Handmatig afgerond':'Slimme diagnose gereed',percent:100}};let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}
+          if(entry.size>=captureLimitBytes||ticket.finishRequested){
+            const report={...preview,status:'Ontvangen',progress:{phase:'complete',label:'Compacte diagnose gereed',percent:100}};
             diagnosticFiles.set(chargerId,{fileName,content});
-            await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.debugRestoreStatus});
-            try{await client.remove(remote);}catch{}
+            const completed={...report,textFileName:null,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.debugRestoreStatus};
+            diagnosticReports.set(chargerId,completed);
             releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);
+            // Show the result immediately; archiving and remote cleanup must
+            // never keep the progress screen open.
+            void (async()=>{let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}await rememberDiagnosticReport(chargerId,{...completed,textFileName});try{const cleanup=new FtpClient(8000);try{const{directory:cleanupDirectory}=await diagnosticFtpAccess(cleanup);await cleanup.remove(diagnosticRemotePath(cleanupDirectory,fileName));}finally{cleanup.close();}}catch{}})();
             return;
           }
         }
@@ -460,9 +470,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const chargerId=String(body.id||''),ticket=activeFtpTickets.get(chargerId)||[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
         if(!ticket)throw Error('Er loopt geen diagnose voor dit laadstation');
         ticket.fastScan=true;ticket.finishRequested=true;
-        try{ticket.ftpAbortRequested=await requestFtpAbort(ticket);}catch{ticket.ftpAbortRequested=false;}
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens afronden',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:'Handmatig afronden aangevraagd'});
-        return send(202,{status:ticket.livePreview?'De huidige compacte gegevens worden opgeslagen':'LaadFix leest nu de nieuwste 20 kB en rondt daarna af'});
+        return send(202,{status:'De FTP-schrijver wordt bij de volgende controle veilig gestopt; daarna analyseert LaadFix direct de nieuwste gegevens'});
       }
       if(req.url==='/api/fleet-command'){
         if(typeof fleetCommander!=='function')throw Error('Vlootbediening is alleen online beschikbaar');
