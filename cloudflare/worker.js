@@ -6,8 +6,6 @@ const BACKEND_STALE_MS = 150_000;
 const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
-const CHARGER_BOOT_GRACE_MS = 60_000;
-const CHARGER_IDLE_RECOVERY_MS = 360_000;
 
 export class OcppGateway {
   constructor(ctx) {
@@ -25,16 +23,6 @@ export class OcppGateway {
     if (this.activeCharger?.readyState === WebSocket.OPEN) return this.activeCharger;
     this.activeCharger = this.ctx.getWebSockets('charger').find(socket => socket.readyState === WebSocket.OPEN) || null;
     return this.activeCharger;
-  }
-
-  chargerSilence(attachment = {}) {
-    const connectedAt = Number(attachment.connectedAt || 0);
-    const lastMessageAt = Number(attachment.lastMessageAt || 0);
-    const reference = lastMessageAt || connectedAt;
-    if (!reference) return { stale: false, silentMs: 0, phase: 'unknown' };
-    const silentMs = Date.now() - reference;
-    const limit = lastMessageAt ? CHARGER_IDLE_RECOVERY_MS : CHARGER_BOOT_GRACE_MS;
-    return { stale: silentMs >= limit, silentMs, phase: lastMessageAt ? 'idle' : 'boot' };
   }
 
   async scheduleBackendReconnect(delay = BACKEND_RETRY_MIN_MS) {
@@ -58,12 +46,6 @@ export class OcppGateway {
     try {
       if (this.backend?.readyState === WebSocket.OPEN) {
         if (await this.backendHealthy()) {
-          const silence = this.chargerSilence(attachment);
-          if (silence.stale) {
-            console.log(JSON.stringify({event:'charger_watchdog',phase:silence.phase,silentMs:silence.silentMs}));
-            this.closeActive(1012, 'OCPP-sessie reageert niet; opnieuw verbinden');
-            return;
-          }
           await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
           return;
         }
@@ -135,7 +117,7 @@ export class OcppGateway {
       };
       backend.addEventListener('close', event => detach(event, 'backend_closed'));
       backend.addEventListener('error', event => detach(event, 'backend_error'));
-      for (const message of this.queue.splice(0)) backend.send(message);
+      await this.flushBackendQueue(backend);
       this.backendRetryAttempt = 0;
       this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS));
       console.log(JSON.stringify({event:'backend_open',status:response.status}));
@@ -148,6 +130,10 @@ export class OcppGateway {
   async webSocketMessage(ws, message) {
     const attachment = ws.deserializeAttachment() || {};
     ws.serializeAttachment?.({...attachment,lastMessageAt:Date.now()});
+    if (this.isBootNotification(message)) {
+      const boot=typeof message==='string'?message:new TextDecoder().decode(message);
+      this.ctx.waitUntil(this.ctx.storage.put('lastBootMessage',boot));
+    }
     if (this.activeCharger && this.activeCharger !== ws) {
       console.log(JSON.stringify({event:'charger_duplicate_rejected'}));
       ws.close(1000, 'Andere verbinding actief');
@@ -183,6 +169,26 @@ export class OcppGateway {
       this.backend = null;
       this.ctx.waitUntil(this.scheduleBackendReconnect());
     }
+  }
+
+  isBootNotification(message) {
+    try {
+      const text=typeof message==='string'?message:new TextDecoder().decode(message);
+      const frame=JSON.parse(text);
+      return Array.isArray(frame)&&frame[0]===2&&frame[2]==='BootNotification';
+    } catch { return false; }
+  }
+
+  async flushBackendQueue(backend) {
+    const queued=this.queue.splice(0);
+    if (!queued.some(message=>this.isBootNotification(message))) {
+      const cachedBoot=await this.ctx.storage.get('lastBootMessage');
+      if (cachedBoot) {
+        backend.send(cachedBoot);
+        console.log(JSON.stringify({event:'boot_replayed'}));
+      }
+    }
+    for (const message of queued) backend.send(message);
   }
 
   webSocketClose(ws, code, reason) {

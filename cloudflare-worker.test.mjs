@@ -96,28 +96,36 @@ test('Cloudflare health kan ieder geregistreerd serienummer gericht wakker maken
   assert.match(names[0],/ELC-4202370$/);
 });
 
-test('Cloudflare vervangt een stille ladersessie alleen wanneer de backend gezond is', async () => {
-  const closed=[];
-  const attachment={path:'/ocpp/test/charger',connectedAt:Date.now()-70_000,lastMessageAt:0};
-  const charger={
-    readyState:1,
-    deserializeAttachment:()=>attachment,
-    close:(code,reason)=>closed.push({side:'charger',code,reason})
-  };
+test('Cloudflare bewaart de BootNotification zonder de ladersocket te sluiten', async () => {
+  const stored=[];
+  const message='[2,"boot-1","BootNotification",{"chargePointModel":"DUO2"}]';
+  const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'}),serializeAttachment:()=>{}};
   const ctx={
     getWebSockets:()=>[charger],
     waitUntil:promise=>promise.catch(()=>{}),
-    storage:{setAlarm:async()=>{},deleteAlarm:async()=>{}}
+    storage:{put:async(key,value)=>stored.push({key,value}),setAlarm:async()=>{},deleteAlarm:async()=>{}}
   };
   const gateway=new OcppGateway(ctx);
   gateway.activeCharger=charger;
-  gateway.backend={readyState:1,close:(code,reason)=>closed.push({side:'backend',code,reason})};
-  gateway.backendHealthy=async()=>true;
-  await gateway.alarm();
-  assert.equal(closed[0].side,'charger');
-  assert.equal(closed[0].code,1012);
-  assert.match(closed[0].reason,/opnieuw verbinden/i);
-  assert.equal(gateway.activeCharger,null);
+  gateway.backend={readyState:1,send:()=>{}};
+  await gateway.webSocketMessage(charger,message);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(stored,[{key:'lastBootMessage',value:message}]);
+  assert.equal(gateway.activeCharger,charger);
+});
+
+test('Cloudflare speelt de bewaarde BootNotification af na alleen een serverherstart', async () => {
+  const sent=[];
+  const cached='[2,"boot-old","BootNotification",{"chargePointModel":"DUO2"}]';
+  const ctx={
+    getWebSockets:()=>[],
+    waitUntil:promise=>promise.catch(()=>{}),
+    storage:{get:async key=>key==='lastBootMessage'?cached:null,setAlarm:async()=>{},deleteAlarm:async()=>{}}
+  };
+  const gateway=new OcppGateway(ctx);
+  gateway.queue.push('[2,"heartbeat-1","Heartbeat",{}]');
+  await gateway.flushBackendQueue({send:message=>sent.push(message)});
+  assert.deepEqual(sent,[cached,'[2,"heartbeat-1","Heartbeat",{}]']);
 });
 
 test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code', async () => {
