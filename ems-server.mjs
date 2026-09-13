@@ -312,7 +312,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         }
         if(action==='diagnostics'&&diagnosticTokens.get(diagnosticToken)?.localReceiver&&body.enhancedDebug!==false){
           const ticket=diagnosticTokens.get(diagnosticToken),known=item.configuration?.find(row=>row.key==='chg_Debug')?.value;let originalDebug=known;
-          if(!originalDebug){const read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']}),rows=read?.configurationKey||read?.result?.configurationKey||[];originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;}
+          if(!originalDebug){let read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']}),rows=read?.configurationKey||read?.result?.configurationKey||[];originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;if(!originalDebug){read=await fleetCommander(chargerId,'GetConfiguration',{});rows=read?.configurationKey||read?.result?.configurationKey||[];originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;}}
           if(!originalDebug)throw Error('Huidige debuginstelling kon niet veilig worden bewaard');
           const maximumDebug=maximizeDiagnosticDebug(originalDebug),changed=await fleetCommander(chargerId,'ChangeConfiguration',{key:'chg_Debug',value:maximumDebug});
           if(changed?.status!=='Accepted')throw Error('Tijdelijk verhogen van debugniveau is niet geaccepteerd');
