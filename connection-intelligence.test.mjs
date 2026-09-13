@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,extractMeterIdentities,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
@@ -54,9 +54,26 @@ test('Diagnose-overzicht signaleert een meteradres dat niet bij de socket past',
   const overview=extractDiagnosticOverview(log);assert.equal(overview.activeMeterCount,1);assert.equal(overview.supervisorClientCount,2);assert.deepEqual(overview.addressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);assert.deepEqual(overview.observedAddressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);
 });
 
+test('CAN-status onderscheidt alleen initialisatie van echte master-slavecommunicatie',()=>{
+ const idle=extractDiagnosticOverview('CAN RX RINGBUFFER CTX: 0x1000\nCAN TX RINGBUFFER CTX: 0x2000\n'+JSON.stringify({configurationKey:[{key:'grid_CommChannel',readonly:false,value:'canbus'},{key:'grid_Role',readonly:false,value:'master'},{key:'grid_SupervisorClientCount',readonly:false,value:'0'}]}));
+ assert.equal(idle.canConfigured,true);assert.equal(idle.canPeerExpected,true);assert.equal(idle.canPeerDetected,false);assert.equal(idle.canLevel,'critical');assert.equal(idle.canRxFrames,0);
+ const active=extractDiagnosticOverview('CAN RX ID[102] DATA[01,02]\n'+JSON.stringify({configurationKey:[{key:'grid_CommChannel',readonly:false,value:'canbus'},{key:'grid_Role',readonly:false,value:'slave'}]}));
+ assert.equal(active.canPeerDetected,true);assert.equal(active.canLevel,'ok');assert.equal(active.canRxFrames,1);
+});
+
 test('Antwoordend Modbus-adres weegt zwaarder dan alleen de instelling',()=>{
  const identity=extractMeterIdentity('Meter0:SN[9988]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[2]RG[0]R[1]OK\nKWH:AD[2]RG[48]R[1]OK','EASTR_SDM72D,1,9600,N,1');
  assert.equal(identity.address,'2');assert.equal(identity.configuredAddress,'1');assert.equal(identity.initializedAddress,'1');assert.deepEqual(identity.respondingAddresses,[{address:'2',count:2}]);
+});
+
+test('Een Homebox met één meter toont een antwoord op adres 2 als adresfout voor socket 1',()=>{
+ const meters=extractMeterIdentities('Meter0:SN[HB-1]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[2]RG[0]R[1]OK',[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'}]);
+ assert.equal(meters.length,1);assert.equal(meters[0].slot,1);assert.equal(meters[0].address,'2');assert.equal(meters[0].addressMatches,false);assert.deepEqual(meters[0].respondingAddresses,[{address:'2',count:1}]);
+});
+
+test('Een lader met twee sockets koppelt adres 1 en 2 aan de juiste meter',()=>{
+ const log='Meter0:SN[A]Type[23]Speed[9600]Addr[1]Opt[0]\nMeter1:SN[B]Type[23]Speed[9600]Addr[2]Opt[0]\nKWH:AD[1]RG[0]R[1]OK\nKWH:AD[2]RG[0]R[1]OK',settings=[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'},{key:'chg_KWH2',value:'EASTR_SDM72D,2,9600,N,1'}],meters=extractMeterIdentities(log,settings);
+ assert.deepEqual(meters.map(row=>[row.slot,row.address,row.addressMatches,row.successfulReads]),[[1,'1',true,1],[2,'2',true,1]]);
 });
 
 test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
