@@ -165,7 +165,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     if(req.method==='POST'&&req.url==='/api/command'){
       if(req.socket.remoteAddress!=='127.0.0.1'&&req.socket.remoteAddress!=='::ffff:127.0.0.1')return send(403,{error:'Alleen lokaal toegestaan'});
       if(req.headers['content-type']!=='application/json')return send(415,{error:'JSON vereist'});
-      try{let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>16384)throw Error('Aanvraag te groot');}const body=JSON.parse(raw);if(body.action==='reconnectBackend')return send(200,{result:active?.reconnectBackend?.(true)||{status:'HomeboxOffline'}});return send(200,{result:await localCommand(body.action,body.payload)});}catch(e){return send(400,{error:e.message});}
+      try{let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>16384)throw Error('Aanvraag te groot');}const body=JSON.parse(raw);if(body.action==='reconnectBackend')return send(200,{result:active?.reconnectBackend?.(true)||{status:'HomeboxOffline'}});const requestedTimeout=Number(body.timeoutMs),timeout=Number.isInteger(requestedTimeout)?Math.max(1000,Math.min(120000,requestedTimeout)):undefined;return send(200,{result:await localCommand(body.action,body.payload,timeout)});}catch(e){return send(400,{error:e.message});}
     }
     if(req.method==='POST'&&req.url==='/api/routing'){
       if(req.socket.remoteAddress!=='127.0.0.1'&&req.socket.remoteAddress!=='::ffff:127.0.0.1')return send(403,{error:'Alleen lokaal toegestaan'});

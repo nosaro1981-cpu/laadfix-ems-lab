@@ -140,7 +140,7 @@ export function mergePrimaryFleetState(charger, fleet) {
   return primary ? { ...charger, ...primary, relayReachable: true } : charger;
 }
 
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000,diagnosticConfigurationTimeoutMs=10_000}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -355,8 +355,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       led.busy=true;try{await runLed(colour);lastApplied=colour;led.lastAction=new Date().toISOString();led.error=null;}catch(e){led.error=friendlyLedError(e);}finally{led.busy=false;}
     }
   }
-  async function relayCommand(action,payload){
-    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),signal:AbortSignal.timeout(['GetConfiguration','GetDiagnostics'].includes(action)?125000:95000)});
+  async function relayCommand(action,payload,{timeoutMs}={}){
+    const commandTimeout=Number.isInteger(timeoutMs)?Math.max(1000,Math.min(120000,timeoutMs)):['GetConfiguration','GetDiagnostics'].includes(action)?120000:90000;
+    const response=await fetch(`http://127.0.0.1:${relayMonitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,timeoutMs:commandTimeout}),signal:AbortSignal.timeout(commandTimeout+5000)});
     const value=await response.json();if(!response.ok)throw Error(value.error||'OCPP-opdracht mislukt');return value.result;
   }
   async function changeProxyRoute(upstream){
@@ -519,17 +520,28 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             active=!!item?.activeTransaction||['Charging','Preparing','Finishing'].includes(item?.status);ticket.freshStart=reconnected;
             ticket.sessionNote=reconnected?(reset?.status==='Accepted'?'Nieuwe controllersessie gedetecteerd':`Soft reset meldde ${reset?.status||'geen bevestiging'}, maar de werkelijke herstart is gedetecteerd`):`Soft reset ${reset?.status||'niet bevestigd'}; geen nieuwe sessie bevestigd, het tijdvak vanaf vóór het resetcommando wordt gebruikt`;
           }
-          updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele configuratie lezen',percent:14,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+130_000).toISOString()},{status:ticket.sessionNote||'Actuele configuratie lezen'});
-          let read=await fleetCommander(chargerId,'GetConfiguration',{}),rows=read?.configurationKey||read?.result?.configurationKey||[],originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;
-          if(!originalDebug){read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']});rows=read?.configurationKey||read?.result?.configurationKey||[];originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;}
-          if(!originalDebug)throw Error('Huidige debuginstelling kon niet veilig worden bewaard');
+          const configurationTimeout=Math.max(1000,Math.min(30_000,Number(diagnosticConfigurationTimeoutMs)||10_000)),cachedRows=Array.isArray(item.configuration)?item.configuration:[];
+          updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele configuratie lezen',percent:14,estimatedCompleteAt:new Date(Date.now()+configurationTimeout+(ticket.durationSeconds||300)*1000+(ticket.transferEstimateMs||30_000)).toISOString()},{status:ticket.sessionNote||'Actuele configuratie lezen'});
+          let read=null,rows=[],configurationWarning=null;
+          try{read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];}catch(error){configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; laatst bekende instellingen worden gebruikt.`;rows=cachedRows;}
+          let originalDebug=rows.find(row=>row.key==='chg_Debug')?.value||cachedRows.find(row=>row.key==='chg_Debug')?.value;
+          if(!originalDebug&&!configurationWarning)try{read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']},{timeoutMs:configurationTimeout});const targetedRows=read?.configurationKey||read?.result?.configurationKey||[];rows=targetedRows.length?targetedRows:rows;originalDebug=targetedRows.find(row=>row.key==='chg_Debug')?.value;}catch(error){configurationWarning=`Debuginstelling antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden.`;}
+          if(!originalDebug)configurationWarning=(configurationWarning?configurationWarning+' ':'')+'De proxy wijzigt daarom geen debuginstellingen en vraagt veilig een standaardlog op.';
+          ticket.configurationWarning=configurationWarning;
           ticket.configuration=rows.map(row=>({key:row.key,value:row.value,readonly:!!row.readonly}));ticket.meterSettings=rows.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
-          updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Gekozen debugmodules verhogen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Gekozen debug tijdelijk verhogen'});
-          const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[],maximumDebug=selectedDebugModules.length?(body.preserveUnselectedDebug===true?enhanceSelectedDiagnosticDebug(originalDebug,selectedDebugModules):selectDiagnosticDebug(selectedDebugModules)):maximizeDiagnosticDebug(originalDebug);ticket.originalDebug=originalDebug;ticket.maximumDebug=maximumDebug;ticket.debugModules=selectedDebugModules;
-          await persistPendingDiagnosticRestore(ticket);
-          let changed;try{changed=await fleetCommander(chargerId,'ChangeConfiguration',{key:'chg_Debug',value:maximumDebug});}catch(error){await restoreDiagnosticDebug(ticket);throw error;}
-          if(changed?.status!=='Accepted'){await restoreDiagnosticDebug(ticket);throw Error('Tijdelijk verhogen van debugniveau is niet geaccepteerd');}
-          ticket.enhancedDebug=true;ticket.captureStartedAt=new Date().toISOString();
+          const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[];ticket.debugModules=selectedDebugModules;
+          if(originalDebug){
+            updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Gekozen debugmodules verhogen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Gekozen debug tijdelijk verhogen'});
+            const maximumDebug=selectedDebugModules.length?(body.preserveUnselectedDebug===true?enhanceSelectedDiagnosticDebug(originalDebug,selectedDebugModules):selectDiagnosticDebug(selectedDebugModules)):maximizeDiagnosticDebug(originalDebug);ticket.originalDebug=originalDebug;ticket.maximumDebug=maximumDebug;
+            await persistPendingDiagnosticRestore(ticket);
+            let changed;try{changed=await fleetCommander(chargerId,'ChangeConfiguration',{key:'chg_Debug',value:maximumDebug});}catch(error){await restoreDiagnosticDebug(ticket);throw error;}
+            if(changed?.status!=='Accepted'){await restoreDiagnosticDebug(ticket);throw Error('Tijdelijk verhogen van debugniveau is niet geaccepteerd');}
+            ticket.enhancedDebug=true;
+          }else{
+            ticket.enhancedDebug=false;ticket.maximumDebug=null;
+            updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Configuratie overgeslagen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Standaardlog gebruiken',error:null});
+          }
+          ticket.captureStartedAt=new Date().toISOString();
           if(selectedDebugModules.includes('modbus')){
             for(const connectorId of connectorIds(item))try{await fleetCommander(chargerId,'TriggerMessage',{requestedMessage:'MeterValues',connectorId});}catch{}
           }
@@ -538,7 +550,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           setTimeout(async()=>{try{if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;const result=await fleetCommander(chargerId,'GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime,stopTime:requestedAt});ticket.fileName=result?.fileName||null;if(ticket.fileName&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(chargerId,ticket);if(ticket.fileName&&ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);if(ticket.fileName&&ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug direct herstellen',percent:61},{status:'Diagnosebestand aangemaakt · debug herstellen'});await restoreDiagnosticDebug(ticket);}if(!diagnosticTokens.has(ticket.token))return;updateDiagnosticProgress(chargerId,ticket,{phase:ticket.fileName?'uploading':'failed',label:ticket.fileName?'Homebox verstuurt het bestand':'Geen bestand ontvangen',percent:ticket.fileName?65:100,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.fileName?(ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd'):'Mislukt',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus});if(!ticket.fileName){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Oorspronkelijke debug herstellen',percent:94});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Geen diagnosebestand ontvangen',percent:100},{status:'Mislukt',debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}}catch(error){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Diagnose mislukt',percent:100},{status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}},captureMs).unref();
           setTimeout(()=>restoreDiagnosticDebug(ticket),12*60_000).unref();
           const durationLabel=ticket.durationSeconds<60?`${ticket.durationSeconds} seconden`:ticket.durationSeconds===60?'1 minuut':`${ticket.durationSeconds/60} minuten`;
-          return send(202,{serviceResult:{status:'Gerichte logging gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),`Volledige actuele configuratie gelezen`,`Originele chg_Debug veilig bewaard`,`Alleen gekozen modules op hun veilige maximum gezet`,`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.'}});
+          return send(202,{serviceResult:{status:originalDebug?'Gerichte logging gestart':'Standaardlog gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),configurationWarning||'Volledige actuele configuratie gelezen',originalDebug?'Originele chg_Debug veilig bewaard':'Debuginstelling veilig ongewijzigd gelaten',originalDebug?'Alleen gekozen modules op hun veilige maximum gezet':'Standaardlogging gebruikt',`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:originalDebug?'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.':'De diagnose loopt door zonder configuratiewijzigingen.'}});
           }catch(error){await restoreDiagnosticDebug(ticket);releaseDiagnosticTicket(ticket);const current=diagnosticReports.get(chargerId);diagnosticReports.set(chargerId,{...current,status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus,progress:{...current?.progress,phase:'failed',label:'Diagnose niet gestart',percent:100}});throw error;}
         }
         const commands={
