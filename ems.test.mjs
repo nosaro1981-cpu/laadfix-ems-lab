@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -82,6 +82,13 @@ test('Lange gerichte diagnose behoudt niet-geselecteerde debugwaarden',()=>{
  const original='warn=1,error=1,date=1,syslog=1,gsm=1,events=0,com=1,ocpp=2,eth=1,grid=0,ctrl=1,general=1,sensors=0,fw=1,modbus=0,canbus=0,sys=0';
  const profile=enhanceSelectedDiagnosticDebug(original,['modbus','canbus']);
  assert.match(profile,/modbus=3/);assert.match(profile,/canbus=3/);assert.match(profile,/ocpp=2/);assert.match(profile,/gsm=1/);assert.match(profile,/events=0/);
+});
+test('Diagnose bewaart alleen de veilige relevante configuratie-instellingen',()=>{
+ const snapshot=diagnosticConfigurationSnapshot([{key:'RestartTransOnBoot',value:'1'},{key:'UseTLS',value:'0'},{key:'FTPPassword',value:'geheim'},{key:'eth cfg',value:'type=dhcp,ip=0.0.0.0'}]);
+ assert.deepEqual(snapshot.map(row=>row.key),['RestartTransOnBoot','UseTLS','eth cfg']);
+ assert.equal(JSON.stringify(snapshot).includes('geheim'),false);
+ const text=diagnosticTextWithSettings({diagnosticSettings:snapshot,diagnosticDebugPlan:{original:'modbus=0',temporary:'modbus=3'}},'MODBUS OK');
+ assert.match(text,/RestartTransOnBoot=1/);assert.match(text,/chg_Debug tijdelijk=modbus=3/);assert.match(text,/MODBUS OK/);assert.doesNotMatch(text,/geheim/);
 });
 test('Primaire dashboardstatus neemt OCPP-diagnose uit de actuele vloot over',()=>{
  const charger={id:'RBC-1',chargerConnected:true,backendConnected:true};
