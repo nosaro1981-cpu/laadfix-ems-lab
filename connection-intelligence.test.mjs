@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractDiagnosticOverview,extractMeterIdentity,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
@@ -59,4 +59,18 @@ test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
  assert.match(readable,/Binair meterblok verborgen · 6 onleesbare tekens/);
  assert.match(readable,/KWH:AD\[1\]RG\[48\]R\[1\]OK/);
  assert.doesNotMatch(readable,/\uFFFD/);
+});
+
+test('Controllergeheugen toont vrije RAM, flash, heap en eventopslag',()=>{
+ const log='RAM SIZE/CEILING:128KB/122732\nFLASH SIZE/CEILING:4096KB/3674112\nIP free Heap : 7k\nIP free Heap : 5k\nStack size : 0k, max:5.0kb Gap:4.9kb\nEVENT FLASH MANAGER START [WRID:683][0/2048]MEM USAGE[0]';
+ const health=extractControllerHealth(log),overview=extractDiagnosticOverview(log);
+ assert.deepEqual(health.ram,{totalKb:128,ceilingBytes:122732,usedKb:119.9,usedPercent:93.6,freeKb:8.1,freePercent:6.4});
+ assert.deepEqual(health.flash,{totalKb:4096,ceilingBytes:3674112,usedKb:3588,usedPercent:87.6,freeKb:508,freePercent:12.4});
+ assert.equal(health.minIpHeapKb,5);assert.equal(health.minStackGapKb,4.9);assert.equal(health.level,'ok');assert.deepEqual(health.eventFlash,{writeIndex:683,used:0,capacity:2048,memoryUsage:0});assert.equal(overview.controllerHealth.minIpHeapKb,5);
+});
+
+test('Controllergeheugen waarschuwt bij volle flash en geheugenfouten',()=>{
+ const log='RAM SIZE/CEILING:128KB/130000\nFLASH SIZE/CEILING:4096KB/4150000\nIP free Heap : 1k\nStack overflow\nout of memory',health=extractControllerHealth(log),analysis=analyzeControllerLog(log);
+ assert.equal(health.level,'critical');assert.equal(health.memoryFaults,2);assert.ok(health.ram.freePercent<3);assert.ok(health.flash.freePercent<3);
+ assert.ok(analysis.findings.some(item=>item.code==='CONTROLLER_MEMORY'&&item.level==='critical'));
 });
