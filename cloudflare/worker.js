@@ -1,6 +1,9 @@
 const EXPECTED_PATH = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/RBC-0000032';
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
 const BACKEND_STALE_MS = 150_000;
+const BACKEND_RETRY_MIN_MS = 1_000;
+const BACKEND_RETRY_MAX_MS = 10_000;
+const BACKEND_WATCHDOG_MS = 30_000;
 
 export class OcppGateway {
   constructor(ctx) {
@@ -11,6 +14,50 @@ export class OcppGateway {
     this.queue = [];
     this.backendOpenedAt = 0;
     this.lastBackendMessageAt = 0;
+    this.backendRetryAttempt = 0;
+  }
+
+  connectedCharger() {
+    if (this.activeCharger?.readyState === WebSocket.OPEN) return this.activeCharger;
+    this.activeCharger = this.ctx.getWebSockets('charger').find(socket => socket.readyState === WebSocket.OPEN) || null;
+    return this.activeCharger;
+  }
+
+  async scheduleBackendReconnect(delay = BACKEND_RETRY_MIN_MS) {
+    if (!this.connectedCharger() || this.backend?.readyState === WebSocket.OPEN) return;
+    await this.ctx.storage.setAlarm(Date.now() + Math.max(BACKEND_RETRY_MIN_MS, delay));
+  }
+
+  async backendHealthy() {
+    try {
+      const response = await fetch(RENDER_ORIGIN + '/healthz', {cf:{cacheTtl:0,cacheEverything:false}});
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async alarm() {
+    const charger = this.connectedCharger();
+    if (!charger) return;
+    const attachment = charger.deserializeAttachment() || {};
+    try {
+      if (this.backend?.readyState === WebSocket.OPEN) {
+        if (await this.backendHealthy()) {
+          await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
+          return;
+        }
+        try { this.backend.close(1012, 'Render tijdelijk niet bereikbaar'); } catch {}
+        this.backend = null;
+      }
+      await this.openBackend(attachment.path || EXPECTED_PATH);
+      this.backendRetryAttempt = 0;
+    } catch (error) {
+      this.backendRetryAttempt += 1;
+      const delay = Math.min(BACKEND_RETRY_MAX_MS, BACKEND_RETRY_MIN_MS * 2 ** Math.min(4, this.backendRetryAttempt));
+      console.log(JSON.stringify({event:'backend_retry',attempt:this.backendRetryAttempt,delay,message:String(error?.message||error)}));
+      await this.scheduleBackendReconnect(delay);
+    }
   }
 
   async fetch(request) {
@@ -49,7 +96,8 @@ export class OcppGateway {
       backend.addEventListener('message', event => {
         if (this.backend !== backend) return;
         this.lastBackendMessageAt = Date.now();
-        if (this.activeCharger?.readyState === WebSocket.OPEN) this.activeCharger.send(event.data);
+        const charger = this.connectedCharger();
+        if (charger?.readyState === WebSocket.OPEN) charger.send(event.data);
       });
       const detach = (event, kind) => {
         if (this.backend !== backend) return;
@@ -57,10 +105,13 @@ export class OcppGateway {
         this.backendOpenedAt = 0;
         this.lastBackendMessageAt = 0;
         console.log(JSON.stringify({event:kind,code:event?.code||null,reason:event?.reason||null}));
+        this.ctx.waitUntil(this.scheduleBackendReconnect());
       };
       backend.addEventListener('close', event => detach(event, 'backend_closed'));
       backend.addEventListener('error', event => detach(event, 'backend_error'));
       for (const message of this.queue.splice(0)) backend.send(message);
+      this.backendRetryAttempt = 0;
+      this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS));
       console.log(JSON.stringify({event:'backend_open',status:response.status}));
       return backend;
     })();
@@ -102,6 +153,7 @@ export class OcppGateway {
     } catch (error) {
       console.log(JSON.stringify({event:'backend_error',message:String(error?.message||error)}));
       this.backend = null;
+      this.ctx.waitUntil(this.scheduleBackendReconnect());
     }
   }
 
@@ -111,6 +163,7 @@ export class OcppGateway {
       try { this.backend?.close(code || 1000, reason || 'Laadstation gesloten'); } catch {}
       this.backend = null;
       this.queue = [];
+      this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
     }
   }
 
@@ -124,6 +177,7 @@ export class OcppGateway {
     this.activeCharger = null;
     this.backend = null;
     this.queue = [];
+    this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
   }
 }
 
