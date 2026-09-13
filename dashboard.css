@@ -64,4 +64,7 @@
 .diagnostic-start-control label{display:grid;gap:7px;color:#294057;font-size:13px;font-weight:800}
 .diagnostic-start-control select{width:100%;min-height:44px;border:1px solid #b9cbd9;border-radius:10px;background:#fff;color:#172e4e;padding:0 12px;font:inherit;font-weight:700}
 .diagnostic-start-control button{min-height:44px;padding:0 24px;border-radius:10px;font-weight:800}
+.diagnostic-start-control #startDiagnostics{border-color:#168a5f;background:linear-gradient(135deg,#20a56d,#08784f);color:#fff;box-shadow:0 9px 20px rgba(15,139,91,.24)}
+.diagnostic-start-control #startDiagnostics:hover{background:linear-gradient(135deg,#28b779,#096c49)}
+.diagnostic-start-control #startDiagnostics:disabled{opacity:.48;box-shadow:none}
 @media(max-width:720px){.diagnostic-start-control{grid-template-columns:1fr}.diagnostic-start-control button{width:100%}}
