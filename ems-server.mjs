@@ -422,6 +422,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const configKey=String(body.key||'');
         const configValue=String(body.value??'');
         if(action==='changeConfiguration'&&!/^[A-Za-z0-9_.:-]{1,100}$/.test(configKey))throw Error('Ongeldige configuratiesleutel');
+        if(action==='changeConfiguration'&&configKey.toLowerCase()==='com_ocppid')throw Error('com_OCPPID is beschermd. Voeg het bestaande OCPP-ID toe aan LaadFix en wijzig uitsluitend com_Endpoint.');
         if(action==='changeConfiguration'&&configValue.length>1000)throw Error('Configuratiewaarde is te lang');
         const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
         let diagnosticToken=null,diagnosticLocation=null;
