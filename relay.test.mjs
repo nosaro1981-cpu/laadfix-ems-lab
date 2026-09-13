@@ -143,3 +143,17 @@ test('Oude firmware zonder eerste OCPP-bericht krijgt eenmalig pingcompatibilite
   assert.ok(app.state.connectionTimeline.some(row=>row.type==='legacy_ping_recovery_applied'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+
+test('Online route herstelt een uitgeschakelde WebSocket-ping zonder de Homebox te sluiten', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'PING',upstream:'ws://127.0.0.1:'+backend.address().port+'/PING',meterLogFile:null,ensureWebSocketPingInterval:'50'});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/PING','ocpp1.6');await once(charger,'open');[up]=await connected;
+  charger.send('[2,"status-1","StatusNotification",{"connectorId":1,"status":"Available","errorCode":"NoError"}]');
+  const [raw]=await once(charger,'message'),call=JSON.parse(raw.toString());
+  assert.equal(call[2],'ChangeConfiguration');assert.deepEqual(call[3],{key:'WebSocketPingInterval',value:'50'});
+  charger.send(JSON.stringify([3,call[1],{status:'Accepted'}]));await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(charger.readyState,WebSocket.OPEN);assert.ok(app.state.connectionTimeline.some(row=>row.type==='ping_interval_restored'));
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
