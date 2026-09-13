@@ -103,7 +103,7 @@ export function mergePrimaryFleetState(charger, fleet) {
   return primary ? { ...charger, ...primary, relayReachable: true } : charger;
 }
 
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -393,15 +393,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             const freshSessionStartedAt=ocppDateTime(Date.now()-2_000);
             updateDiagnosticProgress(chargerId,ticket,{phase:'restarting',label:'Controller opnieuw verbinden',percent:8,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Controller herstarten voor frisse diagnose',transport:ticket.localReceiver?'Lokale FTP + HTTPS':'LaadFix FTP'});
             const reset=await fleetCommander(chargerId,'Reset',{type:'Soft'});
-            if(reset?.status==='Accepted'){
-              let reconnected=false;
-              for(let second=0;second<90;second++){await new Promise(resolve=>setTimeout(resolve,1000));item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(item?.chargerConnected&&Number(item.connectionDiagnostics?.sessionId||0)>sessionBefore){reconnected=true;break;}}
-              if(!reconnected)throw Error('Homebox kwam niet binnen 90 seconden terug na de soft reset');
-              active=!!item.activeTransaction||['Charging','Preparing','Finishing'].includes(item.status);ticket.freshStart=true;
-              ticket.freshSessionStartedAt=freshSessionStartedAt;
-            }else{
-              ticket.freshStart=false;ticket.sessionNote=`Soft reset ${reset?.status||'niet bevestigd'}; diagnose gaat veilig door met een exact nieuw tijdvak`;
-            }
+            ticket.freshSessionStartedAt=freshSessionStartedAt;
+            let reconnected=false,disconnected=false,observeUntil=Date.now()+(reset?.status==='Accepted'?diagnosticReconnectWaitMs:Math.min(8_000,diagnosticReconnectWaitMs));
+            while(Date.now()<observeUntil){item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(item?.chargerConnected&&Number(item.connectionDiagnostics?.sessionId||0)>sessionBefore){reconnected=true;break;}if(!item?.chargerConnected&&!disconnected){disconnected=true;observeUntil=Date.now()+diagnosticReconnectWaitMs;}await new Promise(resolve=>setTimeout(resolve,Math.min(1000,Math.max(1,observeUntil-Date.now()))));}
+            if(reset?.status==='Accepted'&&!reconnected)throw Error('Homebox kwam niet binnen 90 seconden terug na de soft reset');
+            active=!!item?.activeTransaction||['Charging','Preparing','Finishing'].includes(item?.status);ticket.freshStart=reconnected;
+            ticket.sessionNote=reconnected?(reset?.status==='Accepted'?'Nieuwe controllersessie gedetecteerd':`Soft reset meldde ${reset?.status||'geen bevestiging'}, maar de werkelijke herstart is gedetecteerd`):`Soft reset ${reset?.status||'niet bevestigd'}; geen nieuwe sessie bevestigd, het tijdvak vanaf vóór het resetcommando wordt gebruikt`;
           }
           updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele configuratie lezen',percent:14,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+130_000).toISOString()},{status:ticket.sessionNote||'Actuele configuratie lezen'});
           let read=await fleetCommander(chargerId,'GetConfiguration',{}),rows=read?.configurationKey||read?.result?.configurationKey||[],originalDebug=rows.find(row=>row.key==='chg_Debug')?.value;
