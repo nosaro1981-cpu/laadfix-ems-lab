@@ -81,6 +81,12 @@ export function normalizeControllerLog(value){
   return String(value||'').replaceAll(String.fromCharCode(0),'').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');
 }
 
+export function readableControllerLog(value){
+  return normalizeControllerLog(value)
+    .replace(/\uFFFD+/g,match=>match.length>=4?`\n[Binair meterblok verborgen · ${match.length} onleesbare tekens]\n`:'')
+    .replace(/\n{3,}/g,'\n\n');
+}
+
 export function diagnosticAnalysisWindow(value,maxLength=250_000){
   const text=normalizeControllerLog(value);
   if(text.length<=maxLength)return text;

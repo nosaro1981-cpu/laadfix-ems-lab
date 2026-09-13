@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractDiagnosticOverview,extractMeterIdentity,normalizeControllerLog} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractDiagnosticOverview,extractMeterIdentity,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
@@ -51,4 +51,12 @@ test('Onbekende toekomstige kWh-meter wordt uit controllerinitialisatie gelezen'
 test('Diagnose-overzicht signaleert een meteradres dat niet bij de socket past',()=>{
   const log='KWH METER [CH][SERIAL][TYPE]:[1][M-2][ABB B23]\nMeter1:SN[M-2]Type[44]Speed[9600]Addr[1]Opt[0]\n'+JSON.stringify({configurationKey:[{key:'chg_KWH2',readonly:false,value:'ABB_B23,1,9600,E,1'},{key:'grid_SupervisorClientCount',readonly:false,value:'2'}]});
   const overview=extractDiagnosticOverview(log);assert.equal(overview.activeMeterCount,1);assert.equal(overview.supervisorClientCount,2);assert.deepEqual(overview.addressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);assert.deepEqual(overview.observedAddressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);
+});
+
+test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
+ const readable=readableControllerLog(`23:16:06:KWH:AD[1]JU:\n[237,0,0]\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\n23:16:07:KWH:AD[1]RG[48]R[1]OK`);
+ assert.match(readable,/KWH:AD\[1\]JU/);
+ assert.match(readable,/Binair meterblok verborgen · 6 onleesbare tekens/);
+ assert.match(readable,/KWH:AD\[1\]RG\[48\]R\[1\]OK/);
+ assert.doesNotMatch(readable,/\uFFFD/);
 });
