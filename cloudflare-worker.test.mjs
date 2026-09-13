@@ -2,6 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker,{OcppGateway,parseChargerId} from './cloudflare/worker.js';
 
+test('Cloudflare beantwoordt Ecotap tekst-keepalive direct aan de rand', () => {
+  const previous=globalThis.WebSocketRequestResponsePair;
+  const configured=[];
+  globalThis.WebSocketRequestResponsePair=class { constructor(request,response){this.request=request;this.response=response;} };
+  try {
+    new OcppGateway({setWebSocketAutoResponse:pair=>configured.push(pair)});
+    assert.deepEqual(configured.map(({request,response})=>({request,response})),[{request:'ping',response:'pong'}]);
+  } finally {
+    if(previous===undefined)delete globalThis.WebSocketRequestResponsePair;
+    else globalThis.WebSocketRequestResponsePair=previous;
+  }
+});
+
 test('Cloudflare accepteert meerdere geldige OCPP-IDs en isoleert hun verbindingen', async () => {
   const names=[];
   const env={OCPP_GATEWAY:{idFromName:name=>{names.push(name);return name;},get:id=>({fetch:async()=>new Response(id)})}};
@@ -150,7 +163,7 @@ test('Bij overlappende Ecotap-sockets wint de nieuwste ladersessie', async () =>
 
 test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code', async () => {
   const closed=[];
-  const charger={readyState:1};
+  const charger={readyState:1,close:(code,reason)=>closed.push({side:'charger',code,reason})};
   const ctx={
     getWebSockets:()=>[],
     waitUntil:promise=>promise.catch(()=>{}),
@@ -158,10 +171,12 @@ test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code'
   };
   const gateway=new OcppGateway(ctx);
   gateway.activeCharger=charger;
-  gateway.backend={close:(code,reason)=>closed.push({code,reason})};
+  gateway.backend={close:(code,reason)=>closed.push({side:'backend',code,reason})};
   gateway.webSocketClose(charger,1006,'WebSocket disconnected without sending Close frame.');
-  assert.equal(closed.length,1);
-  assert.equal(closed[0].code,1012);
-  assert.match(closed[0].reason,/disconnected/i);
+  assert.equal(closed.length,2);
+  assert.equal(closed[0].side,'charger');
+  assert.equal(closed[1].side,'backend');
+  assert.equal(closed[1].code,1012);
+  assert.match(closed[1].reason,/disconnected/i);
   assert.equal(gateway.backend,null);
 });

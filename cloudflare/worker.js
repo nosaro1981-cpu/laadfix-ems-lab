@@ -10,6 +10,13 @@ const BACKEND_WATCHDOG_MS = 30_000;
 export class OcppGateway {
   constructor(ctx) {
     this.ctx = ctx;
+    // Some Ecotap firmware sends a text keepalive in addition to WebSocket
+    // control-frame pings. Answer it at Cloudflare's edge, even while this
+    // Durable Object is hibernating, so a slow/restarting backend can never
+    // cause the charger to report WS PONG TIMEOUT.
+    if (typeof WebSocketRequestResponsePair !== 'undefined' && typeof ctx.setWebSocketAutoResponse === 'function') {
+      ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+    }
     this.activeCharger = null;
     this.backend = null;
     this.backendPromise = null;
@@ -193,6 +200,10 @@ export class OcppGateway {
 
   webSocketClose(ws, code, reason) {
     console.log(JSON.stringify({event:'charger_closed',active:ws===this.activeCharger,code:code||null,reason:reason||null,remaining:this.ctx.getWebSockets('charger').length}));
+    // Complete the close handshake explicitly as well. This is harmless on
+    // newer compatibility dates and prevents an otherwise clean close being
+    // reported to the other relay leg as code 1006 on older runtimes.
+    try { ws.close(code, reason); } catch {}
     if (ws === this.activeCharger) {
       this.activeCharger = null;
       const closeCode = Number(code) >= 1000 && Number(code) <= 4999 && ![1005,1006,1015].includes(Number(code)) ? Number(code) : 1012;
