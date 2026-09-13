@@ -134,15 +134,15 @@ export class OcppGateway {
       const boot=typeof message==='string'?message:new TextDecoder().decode(message);
       this.ctx.waitUntil(this.ctx.storage.put('lastBootMessage',boot));
     }
-    if (this.activeCharger && this.activeCharger !== ws) {
-      console.log(JSON.stringify({event:'charger_duplicate_rejected'}));
-      ws.close(1000, 'Andere verbinding actief');
-      return;
-    }
-    if (!this.activeCharger) {
-      this.activeCharger = ws;
+    if (this.activeCharger !== ws) {
+      const previous=this.activeCharger;
+      this.activeCharger=ws;
+      if (previous?.readyState===WebSocket.OPEN) {
+        console.log(JSON.stringify({event:'charger_session_replaced'}));
+        previous.close(1012,'Nieuwe ladersessie actief');
+      }
       for (const candidate of this.ctx.getWebSockets('charger')) {
-        if (candidate !== ws) candidate.close(1000, 'Andere verbinding gekozen');
+        if (candidate !== ws && candidate !== previous) candidate.close(1012,'Nieuwe ladersessie actief');
       }
     }
     const backendSilentFor = Date.now() - Math.max(this.lastBackendMessageAt, this.backendOpenedAt);

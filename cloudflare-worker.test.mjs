@@ -128,6 +128,26 @@ test('Cloudflare speelt de bewaarde BootNotification af na alleen een serverhers
   assert.deepEqual(sent,[cached,'[2,"heartbeat-1","Heartbeat",{}]']);
 });
 
+test('Bij overlappende Ecotap-sockets wint de nieuwste ladersessie', async () => {
+  const closed=[];
+  const previous={readyState:1,close:(code,reason)=>closed.push({code,reason})};
+  const current={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'}),serializeAttachment:()=>{}};
+  const ctx={
+    getWebSockets:()=>[previous,current],
+    waitUntil:promise=>promise.catch(()=>{}),
+    storage:{put:async()=>{},get:async()=>null,setAlarm:async()=>{},deleteAlarm:async()=>{}}
+  };
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=previous;
+  gateway.backend={readyState:1,send:()=>{}};
+  gateway.backendOpenedAt=Date.now();
+  await gateway.webSocketMessage(current,'[2,"status-1","StatusNotification",{"connectorId":1,"status":"Available"}]');
+  assert.equal(gateway.activeCharger,current);
+  assert.equal(closed.length,1);
+  assert.equal(closed[0].code,1012);
+  assert.match(closed[0].reason,/Nieuwe ladersessie/);
+});
+
 test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code', async () => {
   const closed=[];
   const charger={readyState:1};
