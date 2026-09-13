@@ -134,13 +134,17 @@ export function extractMeterIdentity(value,meterSetting=null){
   const initializedModel=meterDisplay(initialized?.[3]),detectedModel=meterDisplay(detected?.[1]),reportedModel=meterDisplay(bootType?.[1]);
   const model=initializedModel||detectedModel||reportedModel||null;
   const serial=initialized?.[2]||bootSerial?.[1]||startup?.[1]||null;
-  const address=startup?.[4]||parts[1]||null;
+  const successfulAddressCounts={};
+  for(const match of text.matchAll(/KWH:AD\[([^\]]+)\][^\r\n]*\bOK\b/gi))successfulAddressCounts[match[1]]=(successfulAddressCounts[match[1]]||0)+1;
+  const respondingAddresses=Object.entries(successfulAddressCounts).sort((a,b)=>b[1]-a[1]).map(([address,count])=>({address,count}));
+  const respondingAddress=respondingAddresses[0]?.address||null,initializedAddress=startup?.[4]||null,configuredAddress=parts[1]||null;
+  const address=respondingAddress||initializedAddress||configuredAddress;
   const baudrate=startup?.[3]||parts[2]||null;
   const parity=parts[3]||null,stopBits=parts[4]||null;
-  const successfulReads=(text.match(/KWH:AD\[[^\]]+\][^\r\n]*\bOK\b/gi)||[]).length;
+  const successfulReads=respondingAddresses.reduce((total,item)=>total+item.count,0);
   const timeouts=(text.match(/KWH:[^\r\n]*ERR\[TO\]/gi)||[]).length;
   const evidence=[initializedModel?'RS485-initialisatie met model en serienummer':null,reportedModel?'BootNotification met meterType en serienummer':null,successfulReads?`${successfulReads} geslaagde Modbus-uitlezingen`:null].filter(Boolean);
-  return {model,serial,channel:initialized?.[1]||null,address,baudrate,parity,stopBits,successfulReads,timeouts,initializedModel,reportedModel,configured:meterDisplay(parts[0]),evidence,confidence:initializedModel&&serial&&successfulReads?'strong':model?'reported':'unknown'};
+  return {model,serial,channel:initialized?.[1]||null,address,configuredAddress,initializedAddress,respondingAddresses,baudrate,parity,stopBits,successfulReads,timeouts,initializedModel,reportedModel,configured:meterDisplay(parts[0]),evidence,confidence:initializedModel&&serial&&successfulReads?'strong':model?'reported':'unknown'};
 }
 
 export function assessMeterIdentity(text,meterSetting,analysis=null){

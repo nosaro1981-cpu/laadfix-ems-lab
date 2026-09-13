@@ -39,6 +39,7 @@ test('Grote Ecotap-diagnose herkent de actief uitgelezen meter onafhankelijk van
   '[3,"2",{"configurationKey":[{"key":"chg_KWH1","readonly":false,"value":"EASTR_SDM630,1,9600,N,1"}]}]'+'\n'.repeat(140000);
  const clean=normalizeControllerLog(log),window=diagnosticAnalysisWindow(clean),meter=extractMeterIdentity(clean),assessment=assessMeterIdentity(clean,'EASTR_SDM630,1,9600,N,1',analyzeControllerLog(window));
  assert.ok(window.length<=250000);assert.equal(meter.model,'SDM72D');assert.equal(meter.serial,'21280066');assert.equal(meter.address,'1');assert.equal(meter.baudrate,'9600');assert.equal(meter.successfulReads,1);assert.equal(meter.confidence,'strong');
+ assert.deepEqual(meter.respondingAddresses,[{address:'1',count:1}]);assert.equal(meter.configuredAddress,'1');assert.equal(meter.initializedAddress,'1');
  assert.equal(assessment.configured,'SDM630');assert.deepEqual(assessment.observed,['SDM72D']);assert.equal(assessment.mismatch,true);
 });
 
@@ -51,6 +52,11 @@ test('Onbekende toekomstige kWh-meter wordt uit controllerinitialisatie gelezen'
 test('Diagnose-overzicht signaleert een meteradres dat niet bij de socket past',()=>{
   const log='KWH METER [CH][SERIAL][TYPE]:[1][M-2][ABB B23]\nMeter1:SN[M-2]Type[44]Speed[9600]Addr[1]Opt[0]\n'+JSON.stringify({configurationKey:[{key:'chg_KWH2',readonly:false,value:'ABB_B23,1,9600,E,1'},{key:'grid_SupervisorClientCount',readonly:false,value:'2'}]});
   const overview=extractDiagnosticOverview(log);assert.equal(overview.activeMeterCount,1);assert.equal(overview.supervisorClientCount,2);assert.deepEqual(overview.addressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);assert.deepEqual(overview.observedAddressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);
+});
+
+test('Antwoordend Modbus-adres weegt zwaarder dan alleen de instelling',()=>{
+ const identity=extractMeterIdentity('Meter0:SN[9988]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[2]RG[0]R[1]OK\nKWH:AD[2]RG[48]R[1]OK','EASTR_SDM72D,1,9600,N,1');
+ assert.equal(identity.address,'2');assert.equal(identity.configuredAddress,'1');assert.equal(identity.initializedAddress,'1');assert.deepEqual(identity.respondingAddresses,[{address:'2',count:2}]);
 });
 
 test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
