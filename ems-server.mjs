@@ -147,6 +147,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const diagnosticFtpPollMs=Math.max(2000,Number(process.env.DIAGNOSTICS_FTP_POLL_MS)||5000);
   const diagnosticFtpTimeoutMs=Math.max(60000,Number(process.env.DIAGNOSTICS_FTP_TIMEOUT_MS)||180000);
   const diagnosticFtpMaxAttempts=Math.max(2,Math.ceil(diagnosticFtpTimeoutMs/diagnosticFtpPollMs));
+  const diagnosticSmartCaptureBytes=Math.max(8192,Math.min(65536,Number(process.env.DIAGNOSTICS_SMART_CAPTURE_BYTES)||20*1024));
   const localUploadTimeoutMs=diagnosticLocalTimeoutMs===null?Math.max(60000,Number(process.env.DIAGNOSTICS_LOCAL_TIMEOUT_MS)||120000):Math.max(10,Number(diagnosticLocalTimeoutMs));
   let diagnosticFtpHost=null;
   try{diagnosticFtpHost=diagnosticFtpUrl?new URL(diagnosticFtpUrl).hostname.toLowerCase():null;}catch{}
@@ -224,11 +225,32 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(previousSize!==null&&entry.size>previousSize)attempts=0;
         stable=entry.size===lastSize?stable+1:0;lastSize=entry.size;
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
+        const remote=diagnosticRemotePath(directory,fileName);
+        if(ticket.fastScan&&entry.size>=1024&&(entry.size!==ticket.previewSourceSize||ticket.finishRequested)){
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Live diagnosegegevens uitlezen',percent:82,estimatedCompleteAt:new Date(Date.now()+5000).toISOString()},{status:'Live gegevens analyseren'});
+          const previewClient=new FtpClient(8000),chunks=[];let previewBytes=0;
+          try{
+            await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
+            const sink=new Writable({write(chunk,encoding,callback){const remaining=diagnosticSmartCaptureBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}if(previewBytes>=diagnosticSmartCaptureBytes){const stop=Error('Compacte diagnosegrens bereikt');stop.code='SMART_CAPTURE_COMPLETE';return callback(stop);}callback();}});
+            try{await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-diagnosticSmartCaptureBytes));}catch(error){if(error.code!=='SMART_CAPTURE_COMPLETE'&&!/Compacte diagnosegrens/.test(error.message))throw error;}
+          }finally{previewClient.close();}
+          const hadLivePreview=Number(ticket.previewSourceSize||0)>=1024;
+          const content=Buffer.concat(chunks),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
+          ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
+          diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:true,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens beschikbaar',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
+          if((entry.size>=diagnosticSmartCaptureBytes&&hadLivePreview)||ticket.finishRequested){
+            const report={...preview,status:'Ontvangen',progress:{phase:'complete',label:ticket.finishRequested?'Handmatig afgerond':'Slimme diagnose gereed',percent:100}};let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}
+            diagnosticFiles.set(chargerId,{fileName,content});
+            await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.debugRestoreStatus});
+            try{await client.remove(remote);}catch{}
+            releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);
+            return;
+          }
+        }
         if(stable<2)throw Error('Upload is nog bezig');
         updateDiagnosticProgress(chargerId,ticket,{phase:'analyzing',label:'Bestand analyseren',percent:88,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'Log analyseren'});
         const chunks=[];let bytes=0;
         const sink=new Writable({write(chunk,encoding,callback){bytes+=chunk.length;if(bytes>5*1024*1024)return callback(Error('Diagnosebestand is groter dan 5 MB'));chunks.push(Buffer.from(chunk));callback();}});
-        const remote=diagnosticRemotePath(directory,fileName);
         await client.downloadTo(sink,remote);
         const content=Buffer.concat(chunks),report=buildDiagnosticReport(chargerId,ticket,content);let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}
         diagnosticFiles.set(chargerId,{fileName,content});
@@ -412,6 +434,14 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(typeof fleetRouteChanger!=='function')throw Error('Vlootroutering is alleen online beschikbaar');
         const result=await fleetRouteChanger(String(body.id||''),String(body.upstream||''));
         await refreshHardware();return send(200,{result,fleet:charger.fleet});
+      }
+      if(req.url==='/api/diagnostics-finish'){
+        const chargerId=String(body.id||''),ticket=[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&item.fastScan&&!item.ending);
+        if(!ticket)throw Error('Er loopt geen slimme diagnose voor dit laadstation');
+        if(!ticket.livePreview)throw Error('Wacht tot de eerste live gegevens zichtbaar zijn');
+        ticket.finishRequested=true;
+        updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens afronden',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:'Handmatig afronden aangevraagd'});
+        return send(202,{status:'De huidige compacte gegevens worden opgeslagen'});
       }
       if(req.url==='/api/fleet-command'){
         if(typeof fleetCommander!=='function')throw Error('Vlootbediening is alleen online beschikbaar');
