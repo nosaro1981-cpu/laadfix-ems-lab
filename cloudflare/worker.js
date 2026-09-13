@@ -168,7 +168,8 @@ export class OcppGateway {
     console.log(JSON.stringify({event:'charger_closed',active:ws===this.activeCharger,code:code||null,reason:reason||null,remaining:this.ctx.getWebSockets('charger').length}));
     if (ws === this.activeCharger) {
       this.activeCharger = null;
-      try { this.backend?.close(code || 1000, reason || 'Laadstation gesloten'); } catch {}
+      const closeCode = Number(code) >= 1000 && Number(code) <= 4999 && ![1005,1006,1015].includes(Number(code)) ? Number(code) : 1012;
+      try { this.backend?.close(closeCode, reason || 'Laadstationverbinding verbroken'); } catch {}
       this.backend = null;
       this.queue = [];
       this.ctx.waitUntil(this.ctx.storage.deleteAlarm());

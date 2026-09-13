@@ -69,3 +69,21 @@ test('Cloudflare wake activeert herstel voor een bewaarde Homeboxsocket', async 
   assert.equal(status.backendConnected,false);
   assert.equal(alarms.length,1);
 });
+
+test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code', async () => {
+  const closed=[];
+  const charger={readyState:1};
+  const ctx={
+    getWebSockets:()=>[],
+    waitUntil:promise=>promise.catch(()=>{}),
+    storage:{setAlarm:async()=>{},deleteAlarm:async()=>{}}
+  };
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  gateway.backend={close:(code,reason)=>closed.push({code,reason})};
+  gateway.webSocketClose(charger,1006,'WebSocket disconnected without sending Close frame.');
+  assert.equal(closed.length,1);
+  assert.equal(closed[0].code,1012);
+  assert.match(closed[0].reason,/disconnected/i);
+  assert.equal(gateway.backend,null);
+});
