@@ -61,6 +61,11 @@ test('CAN-status onderscheidt alleen initialisatie van echte master-slavecommuni
  assert.equal(active.canPeerDetected,true);assert.equal(active.canLevel,'ok');assert.equal(active.canRxFrames,1);
 });
 
+test('Vast canbus-kanaal bij station_ctrl geldt niet als aangesloten CAN-peer',()=>{
+ const standalone=extractDiagnosticOverview('CAN RX RINGBUFFER CTX: 0x1000\n'+JSON.stringify({configurationKey:[{key:'grid_CommChannel',readonly:false,value:'canbus'},{key:'grid_Role',readonly:false,value:'station_ctrl'},{key:'grid_SupervisorClientCount',readonly:false,value:'2'}]}));
+ assert.equal(standalone.canConfigured,true);assert.equal(standalone.canPeerExpected,false);assert.equal(standalone.canPeerDetected,false);assert.equal(standalone.canLevel,'neutral');assert.equal(standalone.canStatus,'Geen CAN-controller gedetecteerd');
+});
+
 test('Antwoordend Modbus-adres weegt zwaarder dan alleen de instelling',()=>{
  const identity=extractMeterIdentity('Meter0:SN[9988]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[2]RG[0]R[1]OK\nKWH:AD[2]RG[48]R[1]OK','EASTR_SDM72D,1,9600,N,1');
  assert.equal(identity.address,'2');assert.equal(identity.configuredAddress,'1');assert.equal(identity.initializedAddress,'1');assert.deepEqual(identity.respondingAddresses,[{address:'2',count:2}]);
