@@ -6,7 +6,7 @@ import {startEMS} from './ems-server.mjs';
 
 const listen=(server,port,host)=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve);});
 
-export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json'}={}){
+export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,publicOcppHost=process.env.OCPP_PUBLIC_HOST||'ocpp.throbbing-limit-d29f.workers.dev',id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json'}={}){
   if(!publicHost||!pathSecret||!authUser||!authPassword)throw Error('PUBLIC_HOST, OCPP_PATH_SECRET, DASHBOARD_USER en DASHBOARD_PASSWORD zijn verplicht');
   let relay=null,ems=null;
   const relays=new Map();
@@ -33,6 +33,11 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
     const response=await fetch(`http://127.0.0.1:${chargerRelay.monitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload})});
     const result=await response.json();if(!response.ok)throw Error(result.error||'OCPP-opdracht mislukt');return result.result;
   }
+  async function registerFleetStation(chargerId){
+    if(!validId(chargerId))throw Error('Gebruik de exacte OCPP-ID van de laadcontroller');
+    const chargerRelay=await getRelay(chargerId);
+    return {id:chargerId,endpoint:`${publicOcppHost}:80/ocpp/${pathSecret}/${chargerId}`,upstream:chargerRelay.state.upstream};
+  }
   const gateway=http.createServer((req,res)=>{
     if(req.url==='/healthz'){res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({ok:true,ready:!!ems}));return;}
     if(!ems){res.writeHead(503,{'Content-Type':'text/plain; charset=utf-8','Retry-After':'1'});res.end('LaadFix EMS start op');return;}
@@ -55,7 +60,7 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   await listen(gateway,port,host);
   try{
     relay=await getRelay(id);
-    ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRouteChanger:changeFleetRoute,fleetCommander:fleetCommand});
+    ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRegistrar:registerFleetStation,fleetRouteChanger:changeFleetRoute,fleetCommander:fleetCommand});
   }catch(error){if(ems)await ems.close();if(relay)await relay.close();await new Promise(resolve=>gateway.close(resolve));throw error;}
   return {port:gateway.address().port,relay,ems,relays,close:async()=>{
     // Stop accepting connections, then close the relays that keep the gateway open.

@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {OcppGateway} from './cloudflare/worker.js';
+import worker,{OcppGateway,parseChargerId} from './cloudflare/worker.js';
+
+test('Cloudflare accepteert meerdere geldige OCPP-IDs en isoleert hun verbindingen', async () => {
+  const names=[];
+  const env={OCPP_GATEWAY:{idFromName:name=>{names.push(name);return name;},get:id=>({fetch:async()=>new Response(id)})}};
+  for(const stationId of ['RBC-0000032','RBC-0000099']){
+    const request={url:`https://gateway.example/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/${stationId}`,headers:new Headers({Upgrade:'websocket','Sec-WebSocket-Protocol':'ocpp1.6'})};
+    const response=await worker.fetch(request,env);
+    assert.match(await response.text(),new RegExp(stationId+'$'));
+  }
+  assert.notEqual(names[0],names[1]);
+  assert.equal(parseChargerId('/ocpp/verkeerd/RBC-0000099'),null);
+  assert.equal(parseChargerId('/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/ongeldig/id'),null);
+});
 
 test('Cloudflare gateway heropent Render zonder op een nieuw laderbericht te wachten', async () => {
   const alarms=[];

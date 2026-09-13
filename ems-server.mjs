@@ -122,7 +122,7 @@ export function mergePrimaryFleetState(charger, fleet) {
   return primary ? { ...charger, ...primary, relayReachable: true } : charger;
 }
 
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -151,10 +151,16 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   try{diagnosticFtpHost=diagnosticFtpUrl?new URL(diagnosticFtpUrl).hostname.toLowerCase():null;}catch{}
   const diagnosticDestination=diagnosticFtpHost?`LaadFix FTP (${diagnosticFtpHost})`:'LaadFix beveiligde upload';
   const diagnosticHistoryFile=id=>`LaadFix-history-${String(id).replace(/[^A-Za-z0-9._-]/g,'_')}.json`;
+  const stationRegistryFile='LaadFix-stations.json';
+  const registeredStationIds=new Set([charger.id]);
   const diagnosticRestoreFile=id=>`LaadFix-pending-debug-${String(id).replace(/[^A-Za-z0-9._-]/g,'_')}.json`;
   const diagnosticTransferEstimateMs=chargerId=>{const samples=(diagnosticHistories.get(chargerId)||[]).map(row=>Date.parse(row.receivedAt)-Date.parse(row.stopTime||row.requestedAt)).filter(value=>Number.isFinite(value)&&value>5_000&&value<10*60_000).slice(0,6).sort((a,b)=>a-b);if(!samples.length)return 45_000;return Math.max(15_000,Math.min(120_000,samples[Math.floor(samples.length/2)]));};
   const diagnosticFtpAccess=async client=>{const url=new URL(diagnosticFtpUrl);await client.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});return{directory:decodeURIComponent(url.pathname||'/').replace(/\/$/,'')||'/'};};
   const diagnosticRemotePath=(directory,file)=>(directory==='/'?'':directory)+'/'+file;
+  const validStationId=value=>/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(String(value||''));
+  const persistStationRegistry=async()=>{if(!diagnosticFtpUrl)return false;const client=new FtpClient(15000);try{const{directory}=await diagnosticFtpAccess(client),content=Buffer.from(JSON.stringify([...registeredStationIds].sort()));await client.uploadFrom(Readable.from([content]),diagnosticRemotePath(directory,stationRegistryFile));return true;}finally{client.close();}};
+  const loadStationRegistry=async()=>{if(!diagnosticFtpUrl||typeof fleetRegistrar!=='function')return;const client=new FtpClient(15000),chunks=[];try{const{directory}=await diagnosticFtpAccess(client),sink=new Writable({write(chunk,encoding,callback){chunks.push(Buffer.from(chunk));callback();}});await client.downloadTo(sink,diagnosticRemotePath(directory,stationRegistryFile));const ids=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(Array.isArray(ids))for(const stationId of ids){if(!validStationId(stationId))continue;registeredStationIds.add(stationId);await fleetRegistrar(stationId);}}catch{}finally{client.close();}};
+  const registerStation=async stationId=>{stationId=String(stationId||'').trim();if(!validStationId(stationId))throw Error('Gebruik de exacte OCPP-ID: maximaal 80 letters, cijfers, punten, dubbele punten, streepjes of underscores');if(typeof fleetRegistrar!=='function')throw Error('Laadstations toevoegen is alleen online beschikbaar');const alreadyRegistered=registeredStationIds.has(stationId),result=await fleetRegistrar(stationId);registeredStationIds.add(stationId);if(!alreadyRegistered)await persistStationRegistry();void loadDiagnosticHistory(stationId);return{...result,alreadyRegistered};};
   const persistPendingDiagnosticRestore=async ticket=>{if(!diagnosticFtpUrl||!ticket?.originalDebug)return false;const client=new FtpClient(15000);try{const{directory}=await diagnosticFtpAccess(client),record={chargerId:ticket.chargerId,originalDebug:ticket.originalDebug,requestedAt:ticket.requestedAt};await client.uploadFrom(Readable.from([Buffer.from(JSON.stringify(record))]),diagnosticRemotePath(directory,diagnosticRestoreFile(ticket.chargerId)));pendingDiagnosticRestores.set(ticket.chargerId,record);return true;}finally{client.close();}};
   const clearPendingDiagnosticRestore=async chargerId=>{pendingDiagnosticRestores.delete(chargerId);diagnosticRestoreLoads.delete(chargerId);if(!diagnosticFtpUrl)return;const client=new FtpClient(15000);try{const{directory}=await diagnosticFtpAccess(client);await client.remove(diagnosticRemotePath(directory,diagnosticRestoreFile(chargerId)));}catch{}finally{client.close();}};
   const loadPendingDiagnosticRestore=chargerId=>{if(diagnosticRestoreLoads.has(chargerId))return diagnosticRestoreLoads.get(chargerId);const task=(async()=>{if(!diagnosticFtpUrl)return null;const client=new FtpClient(15000),chunks=[];try{const{directory}=await diagnosticFtpAccess(client),sink=new Writable({write(chunk,encoding,callback){chunks.push(Buffer.from(chunk));callback();}});await client.downloadTo(sink,diagnosticRemotePath(directory,diagnosticRestoreFile(chargerId)));const record=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(record?.chargerId!==chargerId||typeof record?.originalDebug!=='string'||!record.originalDebug)throw Error('Ongeldige debug-herstelregistratie');pendingDiagnosticRestores.set(chargerId,record);return record;}catch{return null;}finally{client.close();}})();diagnosticRestoreLoads.set(chargerId,task);return task;};
@@ -165,6 +171,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const rememberDiagnosticReport=async(chargerId,report)=>{diagnosticReports.set(chargerId,report);if(report?.status!=='Ontvangen')return report;await loadDiagnosticHistory(chargerId);const rows=diagnosticHistories.get(chargerId)||[],confirmedMeterIdentity=confirmedMeterIdentityFor(report,rows),stored=confirmedMeterIdentity?{...report,confirmedMeterIdentity}:report,key=`${stored.receivedAt||''}:${stored.fileName||''}`,history=[stored,...rows.filter(item=>`${item.receivedAt||''}:${item.fileName||''}`!==key)];diagnosticHistories.set(chargerId,history);try{await persistDiagnosticHistory(chargerId);stored.archiveStatus=diagnosticFtpUrl?'Bewaard in centrale diagnosegeschiedenis':'Alleen tijdens deze serversessie bewaard';}catch(error){stored.archiveStatus='Centrale opslag mislukt: '+error.message;}diagnosticReports.set(chargerId,stored);return stored;};
   void loadDiagnosticHistory(charger.id);
   void loadPendingDiagnosticRestore(charger.id);
+  void loadStationRegistry();
   const recoveryStations = () => typeof fleetProvider === 'function' ? fleetProvider() : [charger];
   const recoveryStation = id => recoveryStations().find(item => item.id === id);
   const stationCommand = (id, action, payload) => typeof fleetCommander === 'function' ? fleetCommander(id, action, payload) : id === charger.id ? relayCommand(action, payload) : Promise.reject(Error('Onbekend laadstation'));
@@ -347,6 +354,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     try{
       let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>260000)throw Error('Aanvraag te groot');}
       const body=JSON.parse(raw);
+      if(req.url==='/api/fleet-register'){
+        const result=await registerStation(body.id);await refreshHardware();return send(result.alreadyRegistered?200:201,{result,fleet:charger.fleet});
+      }
       if(req.url==='/api/recovery-case/open'){
         if(busy)return send(429,{error:'Er loopt al een opdracht. Wacht op de uitkomst.'});
         const opened=recoveryCases.open({stationId:String(body.id||charger.id),connectorId:Number(body.connectorId??1),maxDurationMinutes:Number(body.maxDurationMinutes??15)});

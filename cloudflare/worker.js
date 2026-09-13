@@ -1,4 +1,6 @@
-const EXPECTED_PATH = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/RBC-0000032';
+const OCPP_PATH_PREFIX = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/';
+const PRIMARY_CHARGER_ID = 'RBC-0000032';
+const PRIMARY_PATH = OCPP_PATH_PREFIX + PRIMARY_CHARGER_ID;
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
 const BACKEND_STALE_MS = 150_000;
 const BACKEND_RETRY_MIN_MS = 1_000;
@@ -50,7 +52,7 @@ export class OcppGateway {
         try { this.backend.close(1012, 'Render tijdelijk niet bereikbaar'); } catch {}
         this.backend = null;
       }
-      await this.openBackend(attachment.path || EXPECTED_PATH);
+      await this.openBackend(attachment.path || PRIMARY_PATH);
       this.backendRetryAttempt = 0;
     } catch (error) {
       this.backendRetryAttempt += 1;
@@ -156,7 +158,7 @@ export class OcppGateway {
     }
     this.queue.push(message);
     try {
-      await this.openBackend(attachment.path || EXPECTED_PATH);
+      await this.openBackend(attachment.path || PRIMARY_PATH);
     } catch (error) {
       console.log(JSON.stringify({event:'backend_error',message:String(error?.message||error)}));
       this.backend = null;
@@ -193,7 +195,7 @@ export class OcppGateway {
 
 export default {
   async scheduled(_controller, env, ctx) {
-    const gateway = env.OCPP_GATEWAY.get(env.OCPP_GATEWAY.idFromName(EXPECTED_PATH));
+    const gateway = env.OCPP_GATEWAY.get(env.OCPP_GATEWAY.idFromName(PRIMARY_PATH));
     ctx.waitUntil(Promise.all([fetch(RENDER_ORIGIN + '/healthz', {
       headers:{'User-Agent':'LaadFix-OCPP-healthcheck'},
       cf:{cacheTtl:0,cacheEverything:false},
@@ -208,16 +210,26 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    const id = env.OCPP_GATEWAY.idFromName(EXPECTED_PATH);
     if (url.pathname === '/health') {
+      const id = env.OCPP_GATEWAY.idFromName(PRIMARY_PATH);
       return env.OCPP_GATEWAY.get(id).fetch('https://ocpp-gateway.internal/_wake');
     }
-    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket' || url.pathname !== EXPECTED_PATH) {
+    const chargerId = parseChargerId(url.pathname);
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket' || !chargerId) {
       return new Response('OCPP WebSocket vereist', {status:403});
     }
+    const canonicalPath = OCPP_PATH_PREFIX + chargerId;
+    const id = env.OCPP_GATEWAY.idFromName(canonicalPath);
     const protocols = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     console.log(JSON.stringify({event:'ocpp_ingress',path:url.pathname,protocols,country:request.cf?.country||null,colo:request.cf?.colo||null}));
     return env.OCPP_GATEWAY.get(id).fetch(request);
   },
 };
+
+export function parseChargerId(pathname) {
+  if (!String(pathname).startsWith(OCPP_PATH_PREFIX)) return null;
+  let chargerId = '';
+  try { chargerId = decodeURIComponent(String(pathname).slice(OCPP_PATH_PREFIX.length)); } catch { return null; }
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(chargerId) ? chargerId : null;
+}
