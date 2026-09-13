@@ -13,3 +13,5 @@ const app = await startCloud({
 });
 console.log(`Cloud-startcontrole geslaagd op testpoort ${app.port}`);
 await app.close();
+// Render can otherwise keep the successful build open on an inherited runtime handle.
+process.exit(0);
