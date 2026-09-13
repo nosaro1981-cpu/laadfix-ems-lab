@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -75,8 +75,13 @@ test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
 });
 test('Gerichte diagnose verhoogt alleen gekozen modules boven het basisprofiel',()=>{
  const profile=selectDiagnosticDebug(['modbus','canbus']);
- assert.match(profile,/warn=1/);assert.match(profile,/error=1/);assert.match(profile,/date=1/);assert.match(profile,/syslog=1/);assert.match(profile,/modbus=3/);assert.match(profile,/canbus=3/);
- for(const key of ['gsm','events','com','ocpp','eth','grid','ctrl','general','sensors','fw','sys'])assert.match(profile,new RegExp(`${key}=0`));
+ assert.match(profile,/modbus=3/);assert.match(profile,/canbus=3/);
+ for(const key of ['warn','error','date','syslog','gsm','events','com','ocpp','eth','grid','ctrl','general','sensors','fw','sys'])assert.match(profile,new RegExp(`${key}=0`));
+});
+test('Lange gerichte diagnose behoudt niet-geselecteerde debugwaarden',()=>{
+ const original='warn=1,error=1,date=1,syslog=1,gsm=1,events=0,com=1,ocpp=2,eth=1,grid=0,ctrl=1,general=1,sensors=0,fw=1,modbus=0,canbus=0,sys=0';
+ const profile=enhanceSelectedDiagnosticDebug(original,['modbus','canbus']);
+ assert.match(profile,/modbus=3/);assert.match(profile,/canbus=3/);assert.match(profile,/ocpp=2/);assert.match(profile,/gsm=1/);assert.match(profile,/events=0/);
 });
 test('Primaire dashboardstatus neemt OCPP-diagnose uit de actuele vloot over',()=>{
  const charger={id:'RBC-1',chargerConnected:true,backendConnected:true};

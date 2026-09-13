@@ -36,8 +36,13 @@ export const DIAGNOSTIC_DEBUG_BASE='warn=1,error=1,date=1,syslog=1,gsm=3,events=
 const DIAGNOSTIC_DEBUG_KEYS=new Set(DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>part.split('=')[0]));
 export function selectDiagnosticDebug(modules=[]){
   const selected=new Set((Array.isArray(modules)?modules:[]).map(value=>String(value).toLowerCase()).filter(value=>DIAGNOSTIC_DEBUG_KEYS.has(value)));
-  const alwaysOn=new Set(['warn','error','date','syslog']);
-  return DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>{const [key,limit]=part.split('=');return `${key}=${selected.has(key)||alwaysOn.has(key)?limit:0}`;}).join(',');
+  return DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>{const [key,limit]=part.split('=');return `${key}=${selected.has(key)?limit:0}`;}).join(',');
+}
+export function enhanceSelectedDiagnosticDebug(value,modules=[]){
+  const selected=new Set((Array.isArray(modules)?modules:[]).map(item=>String(item).toLowerCase()).filter(item=>DIAGNOSTIC_DEBUG_KEYS.has(item)));
+  const limits=Object.fromEntries(DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>part.split('=')));
+  const current=new Map(String(value||DIAGNOSTIC_DEBUG_BASE).split(',').map(part=>{const[key,...rest]=part.split('=');return[key.trim().toLowerCase(),rest.join('=')];}));
+  return DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>{const[key]=part.split('=');return `${key}=${selected.has(key)?limits[key]:(current.get(key)??0)}`;}).join(',');
 }
 export function diagnosticCaptureDurationMs(ticket={},override=null){
   return override===null?Math.max(ticket.fastScan?10_000:30_000,(ticket.durationSeconds??300)*1000):Math.max(1,Number(override));
@@ -212,7 +217,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     if(scheduledFtpFiles.has(scheduleKey))return;
     scheduledFtpFiles.add(scheduleKey);
     activeFtpTickets.set(chargerId,ticket);
-    let attempts=0,lastSize=null,stable=0;
+    let attempts=0,lastSize=null,stable=0;const captureLimitBytes=ticket.captureLimitBytes||diagnosticSmartCaptureBytes;
     updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Online upload volgen',percent:65,estimatedCompleteAt:new Date(Date.now()+Math.min(60_000,ticket.transferEstimateMs||45_000)).toISOString()});
     const run=async()=>{
       attempts++;
@@ -233,14 +238,14 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           const previewClient=new FtpClient(8000),chunks=[];let previewBytes=0;
           try{
             await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
-            const sink=new Writable({write(chunk,encoding,callback){const remaining=diagnosticSmartCaptureBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}if(previewBytes>=diagnosticSmartCaptureBytes){const stop=Error('Compacte diagnosegrens bereikt');stop.code='SMART_CAPTURE_COMPLETE';return callback(stop);}callback();}});
-            try{await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-diagnosticSmartCaptureBytes));}catch(error){if(error.code!=='SMART_CAPTURE_COMPLETE'&&!/Compacte diagnosegrens/.test(error.message))throw error;}
+            const sink=new Writable({write(chunk,encoding,callback){const remaining=captureLimitBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}if(previewBytes>=captureLimitBytes){const stop=Error('Compacte diagnosegrens bereikt');stop.code='SMART_CAPTURE_COMPLETE';return callback(stop);}callback();}});
+            try{await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-captureLimitBytes));}catch(error){if(error.code!=='SMART_CAPTURE_COMPLETE'&&!/Compacte diagnosegrens/.test(error.message))throw error;}
           }finally{previewClient.close();}
           const hadLivePreview=Number(ticket.previewSourceSize||0)>=1024;
           const content=Buffer.concat(chunks),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:true,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens beschikbaar',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
-          if((entry.size>=diagnosticSmartCaptureBytes&&hadLivePreview)||ticket.finishRequested){
+          if((entry.size>=captureLimitBytes&&hadLivePreview)||ticket.finishRequested){
             const report={...preview,status:'Ontvangen',progress:{phase:'complete',label:ticket.finishRequested?'Handmatig afgerond':'Slimme diagnose gereed',percent:100}};let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}
             diagnosticFiles.set(chargerId,{fileName,content});
             await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.debugRestoreStatus});
@@ -475,7 +480,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(durationSeconds!==null&&(!Number.isInteger(durationSeconds)||durationSeconds<(body.fastScan===true?10:30)||durationSeconds>300))throw Error(body.fastScan===true?'Een snelle technische scan duurt 10 tot 300 seconden':'Kies een diagnoseduur van 30 seconden, 1 minuut of 5 minuten');
           if(Array.isArray(body.debugModules)&&(body.debugModules.length<1||body.debugModules.length>DIAGNOSTIC_DEBUG_KEYS.size||body.debugModules.some(value=>!DIAGNOSTIC_DEBUG_KEYS.has(String(value).toLowerCase()))))throw Error('Kies minimaal één geldige diagnosecategorie');
           const minutes=durationSeconds===null?null:durationSeconds/60;
-          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.enhancedDebug===false||body.quickMode===true,fastScan:body.fastScan===true,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.quickMode===true||(body.quickMode===undefined&&body.enhancedDebug===false),enhancedDebug:body.enhancedDebug!==false,fastScan:body.fastScan===true,captureLimitBytes:body.longMode===true?75*1024:diagnosticSmartCaptureBytes,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         if(action==='diagnostics'&&body.enhancedDebug!==false){
           const ticket=diagnosticTokens.get(diagnosticToken);
@@ -499,7 +504,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!originalDebug)throw Error('Huidige debuginstelling kon niet veilig worden bewaard');
           ticket.configuration=rows.map(row=>({key:row.key,value:row.value,readonly:!!row.readonly}));ticket.meterSettings=rows.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
           updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Gekozen debugmodules verhogen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Gekozen debug tijdelijk verhogen'});
-          const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[],maximumDebug=selectedDebugModules.length?selectDiagnosticDebug(selectedDebugModules):maximizeDiagnosticDebug(originalDebug);ticket.originalDebug=originalDebug;ticket.maximumDebug=maximumDebug;ticket.debugModules=selectedDebugModules;
+          const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[],maximumDebug=selectedDebugModules.length?(body.preserveUnselectedDebug===true?enhanceSelectedDiagnosticDebug(originalDebug,selectedDebugModules):selectDiagnosticDebug(selectedDebugModules)):maximizeDiagnosticDebug(originalDebug);ticket.originalDebug=originalDebug;ticket.maximumDebug=maximumDebug;ticket.debugModules=selectedDebugModules;
           await persistPendingDiagnosticRestore(ticket);
           let changed;try{changed=await fleetCommander(chargerId,'ChangeConfiguration',{key:'chg_Debug',value:maximumDebug});}catch(error){await restoreDiagnosticDebug(ticket);throw error;}
           if(changed?.status!=='Accepted'){await restoreDiagnosticDebug(ticket);throw Error('Tijdelijk verhogen van debugniveau is niet geaccepteerd');}
