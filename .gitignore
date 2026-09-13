@@ -1,4 +1,8 @@
 node_modules/
 data/*.ndjson
 data/*.json
+.local-secrets/
+.local-tools/
+receiver-live-check/
+receiver-live-data/
 

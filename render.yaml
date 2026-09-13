@@ -22,4 +22,6 @@ services:
       - key: DIAGNOSTICS_FTP_URL
         sync: false
       - key: DIAGNOSTICS_FTP_POLL_MS
-        value: 60000
+        value: 5000
+      - key: DIAGNOSTICS_FTP_TIMEOUT_MS
+        value: 180000

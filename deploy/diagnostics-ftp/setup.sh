@@ -56,7 +56,14 @@ grep -qxF /usr/sbin/nologin /etc/shells || echo /usr/sbin/nologin >>/etc/shells
 
 ufw allow "${FTP_PORT}/tcp"
 ufw allow "${PASV_MIN_PORT}:${PASV_MAX_PORT}/tcp"
+ufw allow OpenSSH
+ufw --force enable
 systemctl enable --now vsftpd
 systemctl restart vsftpd
+
+cat >/etc/cron.d/laadfix-diagnostics-cleanup <<EOF
+17 3 * * * root find ${FTP_ROOT} -maxdepth 1 -type f \( -iname '*.xls' -o -iname '*.xlsx' -o -iname '*.txt' -o -iname '*.part' \) -mtime +2 -delete
+EOF
+chmod 0644 /etc/cron.d/laadfix-diagnostics-cleanup
 
 echo "LaadFix diagnose-FTP luistert op poort ${FTP_PORT}."
