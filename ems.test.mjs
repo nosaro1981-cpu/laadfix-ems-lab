@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -58,6 +58,10 @@ test('Diagnoseduur rekent seconden exact om naar milliseconden',()=>{
  assert.equal(diagnosticCaptureDurationMs({durationSeconds:30}),30_000);
  assert.equal(diagnosticCaptureDurationMs({durationSeconds:60}),60_000);
  assert.equal(diagnosticCaptureDurationMs({durationSeconds:300}),300_000);
+});
+test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
+ const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};
+ assert.deepEqual(confirmedMeterIdentityFor({meterIdentity:{model:null}},[confirmed]),{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confirmedAt:confirmed.receivedAt,sourceFile:'confirmed.xls',confidence:'strong'});
 });
 
 test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
