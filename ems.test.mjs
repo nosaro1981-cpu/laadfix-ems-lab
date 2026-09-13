@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -52,6 +52,12 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
  e.set({...structuredClone(defaults),pvW:0});assert.equal(e.tick(6000).result.actualA,0);
  e.set({...structuredClone(defaults),mode:'fast'});assert.equal(e.tick(7000).result.actualA,0);assert.equal(e.tick(12000).result.actualA,16);
  e.set({...structuredClone(defaults),mode:'fast',phases:1});assert.equal(e.tick(13000).result.actualA,0);
+});
+test('Diagnoseduur rekent seconden exact om naar milliseconden',()=>{
+ assert.equal(diagnosticCaptureDurationMs({durationSeconds:10,fastScan:true}),10_000);
+ assert.equal(diagnosticCaptureDurationMs({durationSeconds:30}),30_000);
+ assert.equal(diagnosticCaptureDurationMs({durationSeconds:60}),60_000);
+ assert.equal(diagnosticCaptureDurationMs({durationSeconds:300}),300_000);
 });
 
 test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
