@@ -1,6 +1,8 @@
 import { renderRecoveryCenter } from './recovery-ui.mjs';
 import { configurationHelp } from './configuration-help.mjs';
-const $=id=>document.getElementById(id);
+// Keep the status view working while a browser or CDN still has the previous
+// HTML field name cached during a rolling deployment.
+const $=id=>document.getElementById(id)||(id==='detailCharger'?document.getElementById('detailLaadcontroller'):null);
 const kw=w=>(w/1000).toLocaleString('nl-NL',{minimumFractionDigits:2,maximumFractionDigits:2})+' kW';
 const chargingStatus=status=>['Preparing','Charging','SuspendedEV','SuspendedEVSE','Finishing'].includes(status);
 const age=time=>{if(!time)return'Nog nooit';const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(time))/1000));return seconds<60?seconds+' sec geleden':seconds<3600?Math.floor(seconds/60)+' min geleden':Math.floor(seconds/3600)+' uur geleden';};
