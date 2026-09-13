@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,diagnosticCaptureDurationMs,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -62,6 +62,11 @@ test('Diagnoseduur rekent seconden exact om naar milliseconden',()=>{
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
  const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};
  assert.deepEqual(confirmedMeterIdentityFor({meterIdentity:{model:null}},[confirmed]),{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confirmedAt:confirmed.receivedAt,sourceFile:'confirmed.xls',confidence:'strong'});
+});
+test('Downloadbare diagnosetekst verbergt binaire blokken en FTP-inloggegevens',()=>{
+ const text=downloadableDiagnosticText('regel 1\n'+String.fromCharCode(0)+'������\nftp://gebruiker:geheim@ftp.example/log.xls\npassword=geheim');
+ assert.match(text,/regel 1/);assert.match(text,/Binair meterblok verborgen/);assert.doesNotMatch(text,/geheim|gebruiker/);assert.match(text,/AFGESCHERMD/);
+ assert.match(diagnosticTextFileName('RBC-1',{fileName:'diagnose.xls',receivedAt:'2026-09-13T12:00:00Z'}),/^LaadFix-RBC-1-diagnose-[a-f0-9]{12}\.txt$/);
 });
 
 test('Uitgebreide diagnose maximaliseert modules en bewaart logvlaggen',()=>{
@@ -142,7 +147,8 @@ test('Lokale diagnose-ontvanger gebruikt een eenmalig token en levert online ana
   const upload=`${base}/api/diagnostics-upload/${location.username}/${location.password}`;
   response=await fetch(upload,{method:'PUT',body:'Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[1]RG[FC00]R[1]OK\nKWH METER [CH][SERIAL][TYPE]:[0][21280066][Eastron SDM72D]\n'});assert.equal(response.status,201);
   response=await fetch(base+'/api/state',{headers:{Authorization:authorization}});let report=(await response.json()).diagnostics.DIAGLOCAL;assert.equal(report.status,'Ontvangen');assert.equal(report.destination,'Lokale ontvanger (192.168.43.20)');assert.equal(report.durationSeconds,30);assert.equal(report.minutes,0.5);assert.equal(report.meterIdentity.model,'SDM72D');assert.equal(report.meterIdentity.serial,'21280066');assert.equal(report.meterAssessment.mismatch,true);
-  response=await fetch(base+'/api/diagnostics-manual',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/octet-stream','X-Charger-Id':'DIAGLOCAL','X-File-Name':encodeURIComponent('handmatig.xls')},body:'KWH METER [CH][SERIAL][TYPE]:[0][9988][Eastron SDM630]\nKWH:AD[1]RG[0]R[1]OK'});assert.equal(response.status,201);report=(await response.json()).report;assert.equal(report.source,'Handmatige browserupload');assert.equal(report.meterIdentity.model,'SDM630');assert.equal(report.meterIdentity.serial,'9988');
+  response=await fetch(base+'/api/diagnostics-manual',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/octet-stream','X-Charger-Id':'DIAGLOCAL','X-File-Name':encodeURIComponent('handmatig.xls')},body:'KWH METER [CH][SERIAL][TYPE]:[0][9988][Eastron SDM630]\nKWH:AD[1]RG[0]R[1]OK\nftp://user:secret@example.test/file.xls'});assert.equal(response.status,201);report=(await response.json()).report;assert.equal(report.source,'Handmatige browserupload');assert.equal(report.meterIdentity.model,'SDM630');assert.equal(report.meterIdentity.serial,'9988');
+  response=await fetch(base+'/api/diagnostics-text/DIAGLOCAL?receivedAt='+encodeURIComponent(report.receivedAt),{headers:{Authorization:authorization}});assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/text\/plain/);assert.match(response.headers.get('content-disposition'),/handmatig\.txt/);const text=await response.text();assert.match(text,/Eastron SDM630/);assert.doesNotMatch(text,/secret|user/);assert.match(text,/FTP-adres/);
  }finally{await app.close();}
 });
 
