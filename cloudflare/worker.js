@@ -6,6 +6,8 @@ const BACKEND_STALE_MS = 150_000;
 const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
+const CHARGER_BOOT_GRACE_MS = 60_000;
+const CHARGER_IDLE_RECOVERY_MS = 360_000;
 
 export class OcppGateway {
   constructor(ctx) {
@@ -23,6 +25,16 @@ export class OcppGateway {
     if (this.activeCharger?.readyState === WebSocket.OPEN) return this.activeCharger;
     this.activeCharger = this.ctx.getWebSockets('charger').find(socket => socket.readyState === WebSocket.OPEN) || null;
     return this.activeCharger;
+  }
+
+  chargerSilence(attachment = {}) {
+    const connectedAt = Number(attachment.connectedAt || 0);
+    const lastMessageAt = Number(attachment.lastMessageAt || 0);
+    const reference = lastMessageAt || connectedAt;
+    if (!reference) return { stale: false, silentMs: 0, phase: 'unknown' };
+    const silentMs = Date.now() - reference;
+    const limit = lastMessageAt ? CHARGER_IDLE_RECOVERY_MS : CHARGER_BOOT_GRACE_MS;
+    return { stale: silentMs >= limit, silentMs, phase: lastMessageAt ? 'idle' : 'boot' };
   }
 
   async scheduleBackendReconnect(delay = BACKEND_RETRY_MIN_MS) {
@@ -46,6 +58,12 @@ export class OcppGateway {
     try {
       if (this.backend?.readyState === WebSocket.OPEN) {
         if (await this.backendHealthy()) {
+          const silence = this.chargerSilence(attachment);
+          if (silence.stale) {
+            console.log(JSON.stringify({event:'charger_watchdog',phase:silence.phase,silentMs:silence.silentMs}));
+            this.closeActive(1012, 'OCPP-sessie reageert niet; opnieuw verbinden');
+            return;
+          }
           await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
           return;
         }
@@ -72,7 +90,7 @@ export class OcppGateway {
     const client = pair[0];
     const charger = pair[1];
     const url = new URL(request.url);
-    charger.serializeAttachment({path:url.pathname + url.search});
+    charger.serializeAttachment({path:url.pathname + url.search,connectedAt:Date.now(),lastMessageAt:0});
     // Keep the charger connected at the edge while Render is replaced. The
     // backend leg is reopened independently when it becomes stale or closes.
     this.ctx.acceptWebSocket(charger, ['charger']);
@@ -129,6 +147,7 @@ export class OcppGateway {
 
   async webSocketMessage(ws, message) {
     const attachment = ws.deserializeAttachment() || {};
+    ws.serializeAttachment?.({...attachment,lastMessageAt:Date.now()});
     if (this.activeCharger && this.activeCharger !== ws) {
       console.log(JSON.stringify({event:'charger_duplicate_rejected'}));
       ws.close(1000, 'Andere verbinding actief');
@@ -211,8 +230,15 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/health') {
-      const id = env.OCPP_GATEWAY.idFromName(PRIMARY_PATH);
-      return env.OCPP_GATEWAY.get(id).fetch('https://ocpp-gateway.internal/_wake');
+      const requestedId = url.searchParams.get('station') || PRIMARY_CHARGER_ID;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(requestedId)) {
+        return Response.json({ok:false,error:'Ongeldig laadstation-ID'},{status:400});
+      }
+      const canonicalPath = OCPP_PATH_PREFIX + requestedId;
+      const id = env.OCPP_GATEWAY.idFromName(canonicalPath);
+      const response = await env.OCPP_GATEWAY.get(id).fetch('https://ocpp-gateway.internal/_wake');
+      const status = await response.json();
+      return Response.json({...status,station:requestedId});
     }
     const chargerId = parseChargerId(url.pathname);
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket' || !chargerId) {

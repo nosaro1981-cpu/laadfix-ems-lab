@@ -83,6 +83,43 @@ test('Cloudflare wake activeert herstel voor een bewaarde Homeboxsocket', async 
   assert.equal(alarms.length,1);
 });
 
+test('Cloudflare health kan ieder geregistreerd serienummer gericht wakker maken', async () => {
+  const names=[];
+  const env={OCPP_GATEWAY:{
+    idFromName:name=>{names.push(name);return name;},
+    get:()=>({fetch:async()=>Response.json({ok:true,chargerConnected:true,backendConnected:false})})
+  }};
+  const response=await worker.fetch(new Request('https://gateway.example/health?station=ELC-4202370'),env);
+  const status=await response.json();
+  assert.equal(status.station,'ELC-4202370');
+  assert.equal(status.chargerConnected,true);
+  assert.match(names[0],/ELC-4202370$/);
+});
+
+test('Cloudflare vervangt een stille ladersessie alleen wanneer de backend gezond is', async () => {
+  const closed=[];
+  const attachment={path:'/ocpp/test/charger',connectedAt:Date.now()-70_000,lastMessageAt:0};
+  const charger={
+    readyState:1,
+    deserializeAttachment:()=>attachment,
+    close:(code,reason)=>closed.push({side:'charger',code,reason})
+  };
+  const ctx={
+    getWebSockets:()=>[charger],
+    waitUntil:promise=>promise.catch(()=>{}),
+    storage:{setAlarm:async()=>{},deleteAlarm:async()=>{}}
+  };
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  gateway.backend={readyState:1,close:(code,reason)=>closed.push({side:'backend',code,reason})};
+  gateway.backendHealthy=async()=>true;
+  await gateway.alarm();
+  assert.equal(closed[0].side,'charger');
+  assert.equal(closed[0].code,1012);
+  assert.match(closed[0].reason,/opnieuw verbinden/i);
+  assert.equal(gateway.activeCharger,null);
+});
+
 test('Abnormale Homeboxsluiting sluit ook de Render-socket met een geldige code', async () => {
   const closed=[];
   const charger={readyState:1};
