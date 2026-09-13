@@ -27,7 +27,7 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  async function forward(sender,receiver,raw){const received=once(receiver,'message');sender.send(raw);assert.equal((await received)[0].toString(),raw);}
  await forward(charger,up,'[2,"boot-1","BootNotification",{"chargePointVendor":"Ecotap","chargePointModel":"TEST","firmwareVersion":"TEST","iccid":"89462038075016961884","imsi":"240075823773701","meterType":"Eastron SDM72D","meterSerialNumber":"21280066"}]');
  await forward(up,charger,'[3,"boot-1",{"status":"Accepted","currentTime":"2026-09-09T00:00:00Z","interval":60}]');
- assert.equal(app.state.connectionDiagnostics.bootAccepted,true);assert.ok(app.state.connectionDiagnostics.lastBootAcceptedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='boot_accepted'));
+ assert.equal(app.state.connectionDiagnostics.bootAccepted,true);assert.ok(app.state.connectionDiagnostics.lastBootAcceptedAt);assert.ok(app.state.connectionDiagnostics.lastChargerMessageAt);assert.ok(app.state.connectionDiagnostics.lastBackendMessageAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='boot_accepted'));
  await forward(charger,up,'[2,"auth","Authorize",{"idTag":"TEST-TAG"}]');
  await forward(up,charger,'[3,"auth",{"idTagInfo":{"status":"Accepted"}}]');
  await forward(up,charger,'[2,"read-1","GetConfiguration",{"key":["HeartbeatInterval"]}]');
