@@ -81,6 +81,13 @@ test('Een lader met twee sockets koppelt adres 1 en 2 aan de juiste meter',()=>{
  assert.deepEqual(meters.map(row=>[row.slot,row.address,row.addressMatches,row.successfulReads]),[[1,'1',true,1],[2,'2',true,1]]);
 });
 
+test('Afgebroken FTP-logregels worden niet als Modbus-adres gezien',()=>{
+ const log='Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\nKWH:AD[1]RG[48]R[1]OK\nKWH:AD[1 03:16:38:KWH:AD[1 FTP SND 2EA108, 2342570217, 256]OK';
+ const meter=extractMeterIdentity(log,'EASTR_SDM630,1,9600,N,1');
+ assert.deepEqual(meter.respondingAddresses,[{address:'1',count:1}]);
+ assert.equal(meter.address,'1');
+});
+
 test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
  const readable=readableControllerLog(`23:16:06:KWH:AD[1]JU:\n[237,0,0]\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\n23:16:07:KWH:AD[1]RG[48]R[1]OK`);
  assert.match(readable,/KWH:AD\[1\]JU/);

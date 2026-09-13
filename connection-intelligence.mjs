@@ -137,7 +137,7 @@ export function extractMeterIdentity(value,meterSetting=null,slot=null){
   const model=initializedModel||detectedModel||reportedModel||null;
   const serial=initialized?.[2]||bootSerial?.[1]||startup?.[1]||null;
   const successfulAddressCounts={};
-  for(const match of text.matchAll(/KWH:AD\[([^\]]+)\][^\r\n]*\bOK\b/gi))successfulAddressCounts[match[1]]=(successfulAddressCounts[match[1]]||0)+1;
+  for(const match of text.matchAll(/KWH:AD\[([12])\][^\r\n]*\bOK\b/gi))successfulAddressCounts[match[1]]=(successfulAddressCounts[match[1]]||0)+1;
   const respondingAddresses=Object.entries(successfulAddressCounts).sort((a,b)=>b[1]-a[1]).map(([address,count])=>({address,count}));
   const respondingAddress=respondingAddresses[0]?.address||null,initializedAddress=startup?.[4]||null,configuredAddress=parts[1]||null;
   const address=respondingAddress||initializedAddress||configuredAddress;
@@ -153,7 +153,7 @@ export function extractMeterIdentities(value,meterSettings=[]){
   const text=normalizeControllerLog(value),settings=(Array.isArray(meterSettings)?meterSettings:[]).map((row,index)=>({slot:Number(String(row?.key||'').match(/\d+/)?.[0]||index+1),value:String(row?.value||'')})).filter(row=>row.slot>=1&&row.slot<=2&&!/^none(?:,|$)/i.test(row.value));
   const observedSlots=[...new Set([...text.matchAll(/KWH METER \[CH\]\[SERIAL\]\[TYPE\]:\[(\d+)\]/gi)].map(match=>Number(match[1])+1).filter(slot=>slot>=1&&slot<=2))];
   const slots=[...new Set([...settings.map(row=>row.slot),...observedSlots])].sort();
-  const allResponses={};for(const match of text.matchAll(/KWH:AD\[([^\]]+)\][^\r\n]*\bOK\b/gi))allResponses[match[1]]=(allResponses[match[1]]||0)+1;
+  const allResponses={};for(const match of text.matchAll(/KWH:AD\[([12])\][^\r\n]*\bOK\b/gi))allResponses[match[1]]=(allResponses[match[1]]||0)+1;
   return slots.map(slot=>{const setting=settings.find(row=>row.slot===slot)?.value||null,identity=extractMeterIdentity(text,setting,slot),expectedAddress=String(slot),configuredAddress=identity.configuredAddress,allowed=settings.length<=1?null:new Set([expectedAddress,configuredAddress].filter(Boolean)),respondingAddresses=Object.entries(allResponses).filter(([address])=>!allowed||allowed.has(address)).sort((a,b)=>b[1]-a[1]).map(([address,count])=>({address,count})),successfulReads=respondingAddresses.reduce((sum,row)=>sum+row.count,0),address=respondingAddresses[0]?.address||identity.initializedAddress||configuredAddress||expectedAddress,addressMatches=respondingAddresses.length?respondingAddresses.every(row=>Number(row.address)===slot):null;return{slot,expectedAddress,setting,...identity,address,respondingAddresses,successfulReads,addressMatches};});
 }
 
