@@ -74,6 +74,7 @@ export class OcppGateway {
     // Keep the charger connected at the edge while Render is replaced. The
     // backend leg is reopened independently when it becomes stale or closes.
     this.ctx.acceptWebSocket(charger, ['charger']);
+    console.log(JSON.stringify({event:'charger_socket_accepted',path:url.pathname,existing:this.ctx.getWebSockets('charger').length}));
     const requested = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     const selected = requested.find(value => /^ocpp1\.6j?$/i.test(value));
@@ -127,6 +128,7 @@ export class OcppGateway {
   async webSocketMessage(ws, message) {
     const attachment = ws.deserializeAttachment() || {};
     if (this.activeCharger && this.activeCharger !== ws) {
+      console.log(JSON.stringify({event:'charger_duplicate_rejected'}));
       ws.close(1000, 'Andere verbinding actief');
       return;
     }
@@ -163,6 +165,7 @@ export class OcppGateway {
   }
 
   webSocketClose(ws, code, reason) {
+    console.log(JSON.stringify({event:'charger_closed',active:ws===this.activeCharger,code:code||null,reason:reason||null,remaining:this.ctx.getWebSockets('charger').length}));
     if (ws === this.activeCharger) {
       this.activeCharger = null;
       try { this.backend?.close(code || 1000, reason || 'Laadstation gesloten'); } catch {}
@@ -173,6 +176,7 @@ export class OcppGateway {
   }
 
   webSocketError(ws) {
+    console.log(JSON.stringify({event:'charger_error',active:ws===this.activeCharger,remaining:this.ctx.getWebSockets('charger').length}));
     if (ws === this.activeCharger) this.closeActive(1011, 'Laadstationfout');
   }
 
