@@ -29,14 +29,15 @@ export function colourForStatus(status, chargerConnected=true, backendConnected=
 }
 
 export function maximizeDiagnosticDebug(value){
-  const verbose=new Set(['gsm','com','ocpp','eth','grid','ctrl','general','sensors','fw','modbus','canbus','sys']);
-  return String(value||'').split(',').map(part=>{const [key,...rest]=part.split('=');return verbose.has(key.trim().toLowerCase())?`${key}=7`:rest.length?part:null;}).filter(Boolean).join(',');
+  const limits=Object.fromEntries(DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>part.split('=')));
+  return String(value||'').split(',').map(part=>{const [key,...rest]=part.split('='),name=key.trim().toLowerCase();return Object.hasOwn(limits,name)?`${key}=${limits[name]}`:rest.length?part:null;}).filter(Boolean).join(',');
 }
 export const DIAGNOSTIC_DEBUG_BASE='warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=1,ctrl=3,general=1,sensors=0,fw=1,modbus=3,canbus=3,sys=0';
 const DIAGNOSTIC_DEBUG_KEYS=new Set(DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>part.split('=')[0]));
 export function selectDiagnosticDebug(modules=[]){
   const selected=new Set((Array.isArray(modules)?modules:[]).map(value=>String(value).toLowerCase()).filter(value=>DIAGNOSTIC_DEBUG_KEYS.has(value)));
-  return DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>{const [key,value]=part.split('=');return `${key}=${selected.has(key)?7:value}`;}).join(',');
+  const alwaysOn=new Set(['warn','error','date','syslog']);
+  return DIAGNOSTIC_DEBUG_BASE.split(',').map(part=>{const [key,limit]=part.split('=');return `${key}=${selected.has(key)||alwaysOn.has(key)?limit:0}`;}).join(',');
 }
 export function diagnosticCaptureDurationMs(ticket={},override=null){
   return override===null?Math.max(ticket.fastScan?10_000:30_000,(ticket.durationSeconds??300)*1000):Math.max(1,Number(override));
@@ -469,12 +470,15 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           let changed;try{changed=await fleetCommander(chargerId,'ChangeConfiguration',{key:'chg_Debug',value:maximumDebug});}catch(error){await restoreDiagnosticDebug(ticket);throw error;}
           if(changed?.status!=='Accepted'){await restoreDiagnosticDebug(ticket);throw Error('Tijdelijk verhogen van debugniveau is niet geaccepteerd');}
           ticket.enhancedDebug=true;ticket.captureStartedAt=new Date().toISOString();
+          if(selectedDebugModules.includes('modbus')){
+            for(const connectorId of connectorIds(item))try{await fleetCommander(chargerId,'TriggerMessage',{requestedMessage:'MeterValues',connectorId});}catch{}
+          }
           const captureMs=diagnosticCaptureDurationMs(ticket,diagnosticCaptureMs);
           const captureStartedAt=Date.now();updateDiagnosticProgress(chargerId,ticket,{phase:'capturing',label:'Gerichte logging verzamelen',percent:20,phaseStartedAt:new Date(captureStartedAt).toISOString(),phaseEndsAt:new Date(captureStartedAt+captureMs).toISOString(),estimatedCompleteAt:new Date(captureStartedAt+captureMs+(ticket.transferEstimateMs||100_000)+20_000).toISOString()},{status:'Gerichte logging verzamelen',transport:ticket.localReceiver?'Lokale FTP + HTTPS':'LaadFix FTP',debugRestoreStatus:'Wordt na ontvangst automatisch hersteld'});
           setTimeout(async()=>{try{updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen'});const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;const result=await fleetCommander(chargerId,'GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime,stopTime:requestedAt});ticket.fileName=result?.fileName||null;updateDiagnosticProgress(chargerId,ticket,{phase:ticket.fileName?'uploading':'failed',label:ticket.fileName?'Homebox verstuurt het bestand':'Geen bestand ontvangen',percent:ticket.fileName?65:100,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.fileName?(ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd'):'Mislukt',fileName:ticket.fileName,controllerResponse:result});if(ticket.fileName&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(chargerId,ticket);if(ticket.fileName&&ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);if(!ticket.fileName){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Oorspronkelijke debug herstellen',percent:94});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Geen diagnosebestand ontvangen',percent:100},{status:'Mislukt',debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}}catch(error){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'failed',label:'Diagnose mislukt',percent:100},{status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);}},captureMs).unref();
           setTimeout(()=>restoreDiagnosticDebug(ticket),12*60_000).unref();
           const durationLabel=ticket.durationSeconds<60?`${ticket.durationSeconds} seconden`:ticket.durationSeconds===60?'1 minuut':`${ticket.durationSeconds/60} minuten`;
-          return send(202,{serviceResult:{status:'Gerichte logging gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),`Volledige actuele configuratie gelezen`,`Originele chg_Debug veilig bewaard`,`Gekozen modules tijdelijk op niveau 7`,`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.'}});
+          return send(202,{serviceResult:{status:'Gerichte logging gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),`Volledige actuele configuratie gelezen`,`Originele chg_Debug veilig bewaard`,`Alleen gekozen modules op hun veilige maximum gezet`,`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.'}});
           }catch(error){await restoreDiagnosticDebug(ticket);releaseDiagnosticTicket(ticket);const current=diagnosticReports.get(chargerId);diagnosticReports.set(chargerId,{...current,status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus,progress:{...current?.progress,phase:'failed',label:'Diagnose niet gestart',percent:100}});throw error;}
         }
         const commands={
