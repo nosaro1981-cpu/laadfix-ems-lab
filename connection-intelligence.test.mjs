@@ -1,10 +1,36 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,assessMeterIdentity,compactReadableControllerLog,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,extractMeterIdentities,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,classifyGsmSignal,compactReadableControllerLog,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,extractMeterIdentities,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
- assert.deepEqual(result,{modem:'BG95-M3',imei:'111111111111111',imsi:'222222222222222',iccid:'33333333333333333333',operator:null,signal:'23',registrationCode:'5',registration:'Geregistreerd via roaming',registered:true});
+ assert.deepEqual(result,{modem:'BG95-M3',imei:'111111111111111',imsi:'222222222222222',iccid:'33333333333333333333',operator:null,signal:'23',signalQuality:{value:23,percent:74,label:'Sterk',level:'ok'},registrationCode:'5',registration:'Geregistreerd via roaming',registered:true});
+});
+
+test('GSM-signaalkwaliteit vertaalt de controllerwaarde naar een duidelijke beoordeling',()=>{
+ assert.deepEqual(classifyGsmSignal(3),{value:3,percent:10,label:'Zeer zwak',level:'critical'});
+ assert.deepEqual(classifyGsmSignal(14),{value:14,percent:45,label:'Redelijk',level:'warning'});
+ assert.deepEqual(classifyGsmSignal(23),{value:23,percent:74,label:'Sterk',level:'ok'});
+ assert.equal(classifyGsmSignal(99).label,'Onbekend');
+});
+
+test('FTP-belaste WebSocket blijft als vertraagd maar actief zichtbaar na OCPP-herstel',()=>{
+ const delayed=Array.from({length:28},()=> '19:31:00:WS ERROR RX FRAME TO').join('\n');
+ const configuration=JSON.stringify({configurationKey:[{key:'chg_Reader1',value:'none,CH1'},{key:'chg_Reader2',value:'none,CH2'},{key:'chg_SktType',value:'NoLock+CP-PP,Off'}]});
+ const log=`${delayed}\n19:32:06:WS PONG TIMEOUT\n19:32:07:OCPP RESP:[3,"heartbeat",{}]\n19:32:07:WS PING:[50s]\n19:32:07:GSM REG:5, SQ:23,\n${configuration}\n19:32:08:LEDSTATE CH[0] state[Ready(1)]\n19:32:09:PP[0]state[16][0.00]`;
+ const result=analyzeControllerLog(log);
+ assert.equal(result.stats.webSocketRxFrameTimeouts,28);
+ assert.equal(result.stats.webSocketPongTimeouts,1);
+ assert.equal(result.stats.ocppRecoveredAfterTimeout,true);
+ assert.equal(result.facts.webSocketStatus,'Time-out gezien · OCPP bleef actief');
+ assert.equal(result.facts.webSocketPingInterval,50);
+ assert.equal(result.facts.gsmQuality.label,'Sterk');
+ assert.equal(result.facts.rfidStatus,'Niet geconfigureerd');
+ assert.equal(result.facts.ledState,'Ready(1)');
+ assert.equal(result.facts.ppChannel,1);
+ assert.equal(result.facts.socketType,'NoLock+CP-PP,Off');
+ assert.ok(result.findings.some(item=>item.code==='WS_RX_FRAME_DELAY'&&item.level==='warning'));
+ assert.ok(result.findings.some(item=>item.code==='WS_PONG_TIMEOUT'&&item.level==='warning'));
 });
 
 test('Controllerlog verklaart een mislukte WebSocket-handshake na werkende GSM, DHCP en DNS',()=>{

@@ -13,10 +13,12 @@ DIAG_FTP_USER="${DIAG_FTP_USER:-diagnostics}"
 FTP_PORT="${FTP_PORT:-2121}"
 PASV_MIN_PORT="${PASV_MIN_PORT:-30000}"
 PASV_MAX_PORT="${PASV_MAX_PORT:-30009}"
+DIAG_FTP_MAX_RATE="${DIAG_FTP_MAX_RATE:-32768}"
 FTP_ROOT="/srv/laadfix-diagnostics"
 
 [[ "$DIAG_FTP_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || { echo "Ongeldige gebruikersnaam" >&2; exit 1; }
 [[ "$FTP_PORT" =~ ^[0-9]+$ && "$PASV_MIN_PORT" =~ ^[0-9]+$ && "$PASV_MAX_PORT" =~ ^[0-9]+$ ]] || { echo "Ongeldige poort" >&2; exit 1; }
+[[ "$DIAG_FTP_MAX_RATE" =~ ^[0-9]+$ && "$DIAG_FTP_MAX_RATE" -ge 8192 ]] || { echo "Ongeldige FTP-snelheidsgrens" >&2; exit 1; }
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd ufw
@@ -38,6 +40,7 @@ local_umask=022
 chroot_local_user=YES
 allow_writeable_chroot=YES
 local_root=${FTP_ROOT}
+local_max_rate=${DIAG_FTP_MAX_RATE}
 pasv_enable=YES
 pasv_address=${PUBLIC_IP}
 pasv_min_port=${PASV_MIN_PORT}
@@ -66,4 +69,4 @@ cat >/etc/cron.d/laadfix-diagnostics-cleanup <<EOF
 EOF
 chmod 0644 /etc/cron.d/laadfix-diagnostics-cleanup
 
-echo "LaadFix diagnose-FTP luistert op poort ${FTP_PORT}."
+echo "LaadFix diagnose-FTP luistert op poort ${FTP_PORT} met maximaal ${DIAG_FTP_MAX_RATE} bytes/s per sessie."

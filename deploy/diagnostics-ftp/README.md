@@ -10,8 +10,11 @@ Voer op de VPS uit:
 export PUBLIC_IP="<publiek-ip>"
 export DIAG_FTP_USER="diagnostics"
 export DIAG_FTP_PASSWORD="<sterk-wachtwoord>"
+export DIAG_FTP_MAX_RATE="32768"
 sudo -E bash setup.sh
 ```
+
+De standaardgrens van 32 kB/s voorkomt dat een diagnose-upload de mobiele verbinding volledig vult. OCPP- en WebSocket-berichten houden daardoor ruimte terwijl de Homebox het bestand verstuurt.
 
 Gebruik daarna in Render:
 
