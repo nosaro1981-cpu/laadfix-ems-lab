@@ -8,7 +8,11 @@ const listen=(server,port,host)=>new Promise((resolve,reject)=>{server.once('err
 
 export function reconcileGatewayState(item,gateway,now=Date.now()){
   if(!gateway?.ok||now-Number(gateway.checkedAt||0)>45000)return item;
-  const commandRouteReady=item.chargerConnected===true&&item.backendConnected===true;
+  const lastChargerMessageAt=Date.parse(item.connectionDiagnostics?.lastChargerMessageAt||'');
+  const lastCommandTimeoutAt=Date.parse(item.commandHealth?.lastTimeoutAt||'');
+  const chargerTrafficSeen=item.connectionDiagnostics?.chargerTrafficSeen===true&&Number.isFinite(lastChargerMessageAt);
+  const trafficAfterTimeout=!item.commandHealth?.degraded||lastChargerMessageAt>lastCommandTimeoutAt;
+  const commandRouteReady=item.chargerConnected===true&&item.backendConnected===true&&chargerTrafficSeen&&trafficAfterTimeout;
   const chargerConnected=item.chargerConnected===true||gateway.chargerConnected===true;
   const backendConnected=chargerConnected&&(item.backendConnected===true||gateway.backendConnected===true);
   return {...item,chargerConnected,backendConnected,commandRouteReady,gatewayHealth:{verified:true,version:gateway.gatewayVersion||null,socketCount:Number(gateway.socketCount||0),checkedAt:new Date(gateway.checkedAt).toISOString(),connectedAt:gateway.connectedAt||null,lastMessageAt:gateway.lastMessageAt||null,disagreesWithLocal:item.chargerConnected===true&&gateway.chargerConnected!==true}};

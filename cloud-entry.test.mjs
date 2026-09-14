@@ -2,15 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {reconcileGatewayState} from './cloud-entry.mjs';
 
-test('Een open lokale OCPP-socket blijft zonder tijdslimiet leidend',()=>{
+test('Een open lokale OCPP-socket met echt laderverkeer blijft leidend',()=>{
   const now=Date.now();
-  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true,lastSeen:new Date(now-600000).toISOString()},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,gatewayVersion:'2026-09-14.3',checkedAt:now},now);
+  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true,lastSeen:new Date(now-600000).toISOString(),connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-600000).toISOString()}},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,gatewayVersion:'2026-09-14.3',checkedAt:now},now);
   assert.equal(state.chargerConnected,true);
   assert.equal(state.backendConnected,true);
   assert.equal(state.commandRouteReady,true);
   assert.equal(state.gatewayHealth.verified,true);
   assert.equal(state.gatewayHealth.socketCount,0);
   assert.equal(state.gatewayHealth.disagreesWithLocal,true);
+});
+
+test('Een vastgelopen lokale commandoroute wordt pas na nieuw laderverkeer vrijgegeven',()=>{
+  const now=Date.now(),gateway={ok:true,chargerConnected:true,backendConnected:true,socketCount:1,checkedAt:now};
+  const stalled=reconcileGatewayState({chargerConnected:true,backendConnected:true,connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-30_000).toISOString()},commandHealth:{degraded:true,lastTimeoutAt:new Date(now-10_000).toISOString()}},gateway,now);
+  assert.equal(stalled.commandRouteReady,false);
+  const recovered=reconcileGatewayState({...stalled,connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-1_000).toISOString()}},gateway,now);
+  assert.equal(recovered.commandRouteReady,true);
 });
 
 test('Verouderde gatewaystatus overschrijft de lokale status niet',()=>{
