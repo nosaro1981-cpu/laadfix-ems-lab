@@ -6,18 +6,11 @@ const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
 const CHARGER_STALE_MS = 180_000;
-export const GATEWAY_VERSION = '2026-09-14.4';
+export const GATEWAY_VERSION = '2026-09-14.5';
 
 export class OcppGateway {
   constructor(ctx) {
     this.ctx = ctx;
-    // Some Ecotap firmware sends a text keepalive in addition to WebSocket
-    // control-frame pings. Answer it at Cloudflare's edge, even while this
-    // Durable Object is hibernating, so a slow/restarting backend can never
-    // cause the charger to report WS PONG TIMEOUT.
-    if (typeof WebSocketRequestResponsePair !== 'undefined' && typeof ctx.setWebSocketAutoResponse === 'function') {
-      ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
-    }
     this.activeCharger = null;
     this.backend = null;
     this.backendPromise = null;
@@ -169,6 +162,10 @@ export class OcppGateway {
   async webSocketMessage(ws, message) {
     const attachment = ws.deserializeAttachment() || {};
     ws.serializeAttachment?.({...attachment,lastMessageAt:Date.now()});
+    if (typeof message === 'string' && message.trim().toLowerCase() === 'ping') {
+      ws.send('pong');
+      return;
+    }
     if (this.isBootNotification(message)) {
       const boot=typeof message==='string'?message:new TextDecoder().decode(message);
       this.ctx.waitUntil(this.ctx.storage.put('lastBootMessage',boot));

@@ -2,17 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker,{OcppGateway,parseChargerId,GATEWAY_VERSION} from './cloudflare/worker.js';
 
-test('Cloudflare beantwoordt Ecotap tekst-keepalive direct aan de rand', () => {
-  const previous=globalThis.WebSocketRequestResponsePair;
-  const configured=[];
-  globalThis.WebSocketRequestResponsePair=class { constructor(request,response){this.request=request;this.response=response;} };
-  try {
-    new OcppGateway({setWebSocketAutoResponse:pair=>configured.push(pair)});
-    assert.deepEqual(configured.map(({request,response})=>({request,response})),[{request:'ping',response:'pong'}]);
-  } finally {
-    if(previous===undefined)delete globalThis.WebSocketRequestResponsePair;
-    else globalThis.WebSocketRequestResponsePair=previous;
-  }
+test('Cloudflare beantwoordt Ecotap tekst-keepalive en registreert activiteit', async () => {
+  const sent=[],attachments=[];
+  const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'}),serializeAttachment:value=>attachments.push(value),send:value=>sent.push(value)};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{setAlarm:async()=>{},deleteAlarm:async()=>{}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  await gateway.webSocketMessage(charger,'ping');
+  assert.deepEqual(sent,['pong']);
+  assert.ok(attachments[0].lastMessageAt>0);
+  assert.equal(gateway.queue.length,0);
 });
 
 test('Cloudflare accepteert meerdere geldige OCPP-IDs en isoleert hun verbindingen', async () => {
