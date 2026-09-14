@@ -86,18 +86,11 @@ test('Nieuwe FTP-bytes worden tijdens een groeiende upload direct als live voorb
  assert.equal(diagnosticLivePreviewShouldRead(2*1024,2*1024),false);
  assert.equal(diagnosticLivePreviewShouldRead(3*1024,2*1024),true);
 });
-test('Een recent OCPP-bericht of WebSocket-pong maakt diagnose beschikbaar',()=>{
+test('Een open ladersocket blijft beschikbaar na een eerdere opdracht-time-out',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');
- const item={chargerConnected:true,commandHealth:{degraded:false},connectionDiagnostics:{lastChargerMessageAt:null,lastChargerPongAt:null,chargerTransportResponsive:false},gatewayHealth:{lastMessageAt:Date.parse('2026-09-14T15:59:30Z')}};
- assert.equal(diagnosticStationResponsive(item,now),false);
- item.connectionDiagnostics.lastChargerMessageAt='2026-09-14T15:59:30Z';
+ const item={chargerConnected:true,commandHealth:{degraded:true},connectionDiagnostics:{lastChargerMessageAt:'2026-09-14T15:55:00Z',lastChargerPongAt:null,chargerTransportResponsive:false}};
  assert.equal(diagnosticStationResponsive(item,now),true);
- item.connectionDiagnostics.lastChargerMessageAt='2026-09-14T15:55:00Z';
- item.connectionDiagnostics.lastChargerPongAt='2026-09-14T15:59:40Z';item.connectionDiagnostics.chargerTransportResponsive=true;
- assert.equal(diagnosticStationResponsive(item,now),true);
- item.commandHealth.degraded=true;
- assert.equal(diagnosticStationResponsive(item,now),true);
- item.connectionDiagnostics.lastChargerPongAt='2026-09-14T15:55:00Z';item.connectionDiagnostics.chargerTransportResponsive=false;
+ item.chargerConnected=false;
  assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
