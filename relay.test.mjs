@@ -55,14 +55,14 @@ test('Een nieuwe Render-relay controleert de bestaande Homeboxsessie actief', {t
   assert.equal(app.state.commandHealth.status,'healthy');assert.equal(app.state.connectionDiagnostics.chargerTrafficSeen,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_readiness_probe'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
-test('Een stille Homeboxsessie wordt na een serverherstart schoon vernieuwd', {timeout:5000},async()=>{
+test('Een stille Homeboxsessie blijft na een serverherstart open', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'STALE',upstream:'ws://127.0.0.1:'+backend.address().port+'/STALE',meterLogFile:null,backendReconnectProbeDelayMs:10,backendReadinessTimeoutMs:30});
  let charger,up;
  try{
   const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/STALE','ocpp1.6');await once(charger,'open');[up]=await connected;
-  const closed=once(charger,'close');const call=JSON.parse((await once(charger,'message'))[0].toString());assert.equal(call[2],'GetConfiguration');
-  await closed;assert.equal(app.state.chargerConnected,false);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_session_refresh'));
+  const call=JSON.parse((await once(charger,'message'))[0].toString());assert.equal(call[2],'GetConfiguration');
+  await new Promise(resolve=>setTimeout(resolve,60));assert.equal(charger.readyState,WebSocket.OPEN);assert.equal(app.state.chargerConnected,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_session_unresponsive'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 test('Een reagerende Homeboxsessie blijft actief en ruimt een stille duplicaatsessie op', {timeout:5000},async()=>{
@@ -200,6 +200,19 @@ test('Proxy bevestigt een stille Homebox met WebSocket ping en pong', {timeout:5
   assert.equal(app.state.connectionDiagnostics.chargerTransportResponsive,true);
   assert.ok(app.state.connectionDiagnostics.lastChargerPongAt);
   assert.equal(charger.readyState,WebSocket.OPEN);
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
+
+test('Gemiste transport-pongs verbreken de Homeboxverbinding niet', {timeout:7000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'SLOW-TRANSPORT',upstream:'ws://127.0.0.1:'+backend.address().port+'/SLOW-TRANSPORT',meterLogFile:null,transportPingIntervalMs:1000,transportPongTimeoutMs:1100,backendReconnectProbeDelayMs:5000});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/SLOW-TRANSPORT','ocpp1.6',{autoPong:false});await once(charger,'open');[up]=await connected;
+  await new Promise(resolve=>setTimeout(resolve,3200));
+  assert.equal(charger.readyState,WebSocket.OPEN);assert.equal(up.readyState,WebSocket.OPEN);assert.equal(app.state.chargerConnected,true);assert.equal(app.state.connectionDiagnostics.chargerTransportResponsive,false);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_transport_timeout'));
+  charger.pong();await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(app.state.connectionDiagnostics.chargerTransportResponsive,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_transport_recovered'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
 

@@ -91,19 +91,34 @@ test('Cloudflare gateway bewaart een stille open backendverbinding', async () =>
   assert.equal(alarms.length,1);
 });
 
-test('Cloudflare vernieuwt een ladersocket die drie minuten geen OCPP-bericht gaf', async () => {
-  const closed=[];let backendClosed=false,alarmDeleted=false;
+test('Een volle backendwachtrij laat de ladersocket open', async () => {
+  const closed=[];
+  const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'}),serializeAttachment:()=>{},close:(code,reason)=>closed.push({code,reason})};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{setAlarm:async()=>{},deleteAlarm:async()=>{},put:async()=>{}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  gateway.queue=Array.from({length:50},(_,index)=>`message-${index}`);
+  gateway.openBackend=async()=>{throw Error('Backoffice tijdelijk niet bereikbaar');};
+  await gateway.webSocketMessage(charger,'nieuw-bericht');
+  assert.deepEqual(closed,[]);
+  assert.equal(gateway.activeCharger,charger);
+  assert.equal(gateway.queue.length,50);
+  assert.equal(gateway.queue.at(-1),'nieuw-bericht');
+});
+
+test('Cloudflare bewaart een ladersocket die tijdens FTP tijdelijk geen OCPP-bericht geeft', async () => {
+  const closed=[];let backendClosed=false;const alarms=[];
   const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger',lastMessageAt:Date.now()-181_000}),close:(code,reason)=>closed.push({code,reason})};
-  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{setAlarm:async()=>{},deleteAlarm:async()=>{alarmDeleted=true;}}};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{setAlarm:async value=>alarms.push(value),deleteAlarm:async()=>{}}};
   const gateway=new OcppGateway(ctx);
   gateway.activeCharger=charger;
   gateway.backend={readyState:1,close:()=>{backendClosed=true;}};
   await gateway.alarm();
-  assert.deepEqual(closed,[{code:1012,reason:'OCPP-sessie reageert niet meer'}]);
-  assert.equal(backendClosed,true);
-  assert.equal(gateway.backend,null);
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(alarmDeleted,true);
+  assert.deepEqual(closed,[]);
+  assert.equal(backendClosed,false);
+  assert.equal(gateway.backend.readyState,1);
+  assert.equal(gateway.activeCharger,charger);
+  assert.equal(alarms.length,1);
 });
 
 test('Een stille maar open backendverbinding blijft intact wanneer de lader weer data stuurt', async () => {

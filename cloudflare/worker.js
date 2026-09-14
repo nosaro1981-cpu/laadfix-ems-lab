@@ -6,8 +6,7 @@ const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
 const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
-const CHARGER_STALE_MS = 180_000;
-export const GATEWAY_VERSION = '2026-09-14.6';
+export const GATEWAY_VERSION = '2026-09-14.7';
 
 export class OcppGateway {
   constructor(ctx) {
@@ -67,13 +66,6 @@ export class OcppGateway {
     const charger = this.connectedCharger();
     if (!charger) return;
     const attachment = charger.deserializeAttachment() || {};
-    const lastChargerActivity = Number(attachment.lastMessageAt || 0);
-    if (lastChargerActivity > 0 && Date.now() - lastChargerActivity > CHARGER_STALE_MS) {
-      console.log(JSON.stringify({event:'charger_stale',lastMessageAt:lastChargerActivity,ageMs:Date.now()-lastChargerActivity}));
-      try { charger.close(1012, 'OCPP-sessie reageert niet meer'); } catch {}
-      this.releaseCharger(charger, 1012, 'OCPP-sessie reageert niet meer');
-      return;
-    }
     try {
       if (this.backend?.readyState === WebSocket.OPEN) {
         await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
@@ -195,8 +187,8 @@ export class OcppGateway {
       return;
     }
     if (this.queue.length >= 50) {
-      this.closeActive(1011, 'Wachtrij vol');
-      return;
+      this.queue.shift();
+      console.log(JSON.stringify({event:'backend_queue_trimmed',detail:'Oudste bericht overgeslagen; ladersocket blijft open'}));
     }
     this.queue.push(message);
     try {
