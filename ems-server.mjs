@@ -158,7 +158,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const updateDiagnosticProgress=(chargerId,ticket,progress,extra={})=>{ticket.progress={...(ticket.progress||{}),...progress,updatedAt:new Date().toISOString()};diagnosticReports.set(chargerId,{...(diagnosticReports.get(chargerId)||ticket),...ticket,...extra,progress:ticket.progress});};
   const deferBackgroundReadings=id=>{
     const report=diagnosticReports.get(id);
-    return !!(report&&report.expiresAt>Date.now()&&(report.status==='Aangevraagd'||report.quietDiagnostics===true&&['FTP-upload wordt gevolgd','Upload verwacht','FTP-bestand wordt gezocht','Opdracht geaccepteerd'].includes(report.status)));
+    return !!(report&&report.expiresAt>Date.now()&&(report.status==='Aangevraagd'||report.quietDiagnostics===true&&!['complete','failed'].includes(report.progress?.phase)));
   };
   const diagnosticFtpUrl=String(diagnosticFtpUrlOverride??process.env.DIAGNOSTICS_FTP_URL??'').trim();
   const diagnosticFtpPollMs=Math.max(2000,Number(process.env.DIAGNOSTICS_FTP_POLL_MS)||5000);
@@ -182,13 +182,15 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const client=new FtpClient(8000);try{const{directory}=await diagnosticFtpAccess(client);return await client.list(directory);}finally{client.close();}
   };
   const diagnosticEntryVersion=entry=>`${Number(entry?.size)||0}:${entry?.modifiedAt instanceof Date?entry.modifiedAt.getTime():String(entry?.rawModifiedAt||'')}`;
-  const snapshotDiagnosticFtp=async chargerId=>{if(!diagnosticFtpUrl)return null;try{return new Map((await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(chargerId).test(row.name)).map(row=>[row.name,diagnosticEntryVersion(row)]));}catch{return null;}};
+  const snapshotDiagnosticFtp=async chargerId=>{if(!diagnosticFtpUrl)return null;for(let attempt=0;attempt<3;attempt++){try{return new Map((await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(chargerId).test(row.name)).map(row=>[row.name,diagnosticEntryVersion(row)]));}catch{if(attempt<2)await new Promise(resolve=>setTimeout(resolve,500));}}return null;};
+  const diagnosticFileTime=entry=>{const match=String(entry?.name||'').match(/Diag(\d{10})(?:\D|$)/i);if(match)return Number(match[1])*1000;const modified=entry?.modifiedAt?.getTime?.();return Number.isFinite(modified)?modified:NaN;};
   const waitForNewDiagnosticFtpFile=async(ticket,baseline,timeoutMs=120_000)=>{
-    if(!diagnosticFtpUrl||ticket.localReceiver||!(baseline instanceof Map))return null;
+    if(!diagnosticFtpUrl||ticket.localReceiver)return null;
     const deadline=Date.now()+timeoutMs;
     while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending&&!ticket.fileName){
       try{
-        const candidates=(await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(ticket.chargerId).test(row.name)&&baseline.get(row.name)!==diagnosticEntryVersion(row));
+        const requested=Date.parse(ticket.requestedAt)||Date.now(),hasBaseline=baseline instanceof Map;
+        const candidates=(await listDiagnosticFtpEntries()).filter(row=>row?.isFile!==false&&diagnosticFilePattern(ticket.chargerId).test(row.name)&&(hasBaseline?baseline.get(row.name)!==diagnosticEntryVersion(row):diagnosticFileTime(row)>=requested-30_000));
         const newest=candidates.sort((a,b)=>(b.modifiedAt?.getTime?.()||0)-(a.modifiedAt?.getTime?.()||0)||Number(b.size||0)-Number(a.size||0))[0];
         if(newest)return newest;
       }catch{}
@@ -342,6 +344,23 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const waitForDiagnosticConnection=async ticket=>{const deadline=Date.now()+10*60_000;while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending){const item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===ticket.chargerId);if(item?.chargerConnected)return true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Wachten op Homeboxverbinding',percent:54,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'Diagnose gepauzeerd · hervat automatisch zodra de Homebox terug is',error:null});await new Promise(resolve=>setTimeout(resolve,5000));}return false;};
   const failDiagnosticTicket=async(ticket,error,label='Diagnose mislukt')=>{if(!ticket||ticket.ending)return false;ticket.ending=true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94,estimatedCompleteAt:new Date(Date.now()+10_000).toISOString()},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'failed',label,percent:100},{status:'Mislukt',error,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);return true;};
   const scheduleLocalDiagnosticTimeout=ticket=>{setTimeout(()=>{const current=diagnosticReports.get(ticket.chargerId),phase=current?.progress?.phase;if(['complete','failed'].includes(phase)||!diagnosticTokens.has(ticket.token))return;void failDiagnosticTicket(ticket,'Geen diagnosebestand ontvangen via de laptop binnen de veilige wachttijd. Controleer de lokale ontvanger en firewall.','Lokale upload gestopt');},localUploadTimeoutMs).unref();};
+  const requestAndTrackDiagnosticFile=async(ticket,location)=>{
+    const baseline=await snapshotDiagnosticFtp(ticket.chargerId),payload={location,retries:2,retryInterval:60,startTime:ticket.startTime,stopTime:ticket.stopTime};
+    const commandOutcome=fleetCommander(ticket.chargerId,'GetDiagnostics',payload).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
+    const ftpOutcome=diagnosticFtpUrl&&!ticket.localReceiver?waitForNewDiagnosticFtpFile(ticket,baseline).then(entry=>({kind:'ftp',entry})):null;
+    updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Homebox en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
+    let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome,result=null;
+    if(outcome.kind==='response'){result=outcome.result;ticket.fileName=result?.fileName||null;}
+    else if(outcome.kind==='ftp'&&outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
+    if(!ticket.fileName&&ftpOutcome){
+      if(outcome.kind==='error')updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:60,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
+      const ftpResult=outcome.kind==='ftp'?outcome:await ftpOutcome;
+      if(ftpResult?.entry){ticket.fileName=ftpResult.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
+    }
+    if(!ticket.fileName){const command=await commandOutcome;throw Error(command.kind==='error'?`${command.error.message}. Er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');}
+    if(diagnosticFtpUrl&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(ticket.chargerId,ticket);else if(ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);
+    return result;
+  };
   const pythonExe='C:\\Users\\melgh\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe';
   const friendlyLedError=value=>{
     const message=String(value?.message||value||'').trim();
@@ -573,33 +592,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
               updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});
               const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);
               ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;
-              const baseline=await snapshotDiagnosticFtp(chargerId);
-              const payload={location:diagnosticLocation,retries:2,retryInterval:60,startTime,stopTime:requestedAt};
-              const commandOutcome=fleetCommander(chargerId,'GetDiagnostics',payload).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
-              const ftpOutcome=ticket.localReceiver?null:waitForNewDiagnosticFtpFile(ticket,baseline).then(entry=>({kind:'ftp',entry}));
-              updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Homebox en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
-              let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome,result=null;
-              if(outcome.kind==='response'){
-                result=outcome.result;
-                ticket.fileName=result?.fileName||null;
-              }else if(outcome.kind==='ftp'&&outcome.entry){
-                ticket.fileName=outcome.entry.name;
-                ticket.fileDiscoveredWithoutResponse=true;
-              }
-              if(!ticket.fileName&&outcome.kind==='error'&&ftpOutcome){
-                updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:60,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
-                outcome=await ftpOutcome;
-                if(outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
-              }
-              if(!ticket.fileName&&outcome.kind==='response'&&ftpOutcome){
-                outcome=await ftpOutcome;
-                if(outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
-              }
-              if(!ticket.fileName){
-                const command=await commandOutcome;
-                throw Error(command.kind==='error'?`${command.error.message}. Er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');
-              }
-              if(!ticket.localReceiver)scheduleFtpDiagnosticDownload(chargerId,ticket);else scheduleLocalDiagnosticTimeout(ticket);
+              const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
               if(ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug direct herstellen',percent:61},{status:'Diagnosebestand gevonden · debug herstellen'});await restoreDiagnosticDebug(ticket);}
               if(!diagnosticTokens.has(ticket.token))return;
               updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus,error:null});
@@ -611,6 +604,24 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           const durationLabel=ticket.durationSeconds<60?`${ticket.durationSeconds} seconden`:ticket.durationSeconds===60?'1 minuut':`${ticket.durationSeconds/60} minuten`;
           return send(202,{serviceResult:{status:originalDebug?'Gerichte logging gestart':'Standaardlog gestart',steps:[ticket.sessionNote|| (ticket.freshStart?'Nieuwe controllersessie gestart':'Bestaande controllersessie gebruikt'),configurationWarning||'Volledige actuele configuratie gelezen',originalDebug?'Originele chg_Debug veilig bewaard':'Debuginstelling veilig ongewijzigd gelaten',originalDebug?'Alleen gekozen modules op hun veilige maximum gezet':'Standaardlogging gebruikt',`Diagnose wordt over ${durationLabel} automatisch opgevraagd`],advice:originalDebug?'Na ontvangst of uiterlijk na twaalf minuten wordt de oorspronkelijke debuginstelling automatisch teruggezet.':'De diagnose loopt door zonder configuratiewijzigingen.'}});
           }catch(error){await restoreDiagnosticDebug(ticket);releaseDiagnosticTicket(ticket);const current=diagnosticReports.get(chargerId);diagnosticReports.set(chargerId,{...current,status:'Mislukt',error:error.message,debugRestoreStatus:ticket.debugRestoreStatus,progress:{...current?.progress,phase:'failed',label:'Diagnose niet gestart',percent:100}});throw error;}
+        }
+        if(action==='diagnostics'){
+          const ticket=diagnosticTokens.get(diagnosticToken);
+          updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});
+          if(!diagnosticFtpUrl||ticket.localReceiver){
+            try{
+              const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
+              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Upload verwacht',fileName:ticket.fileName,controllerResponse:result,error:null});
+              return send(200,{result,serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en upload worden gevolgd'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
+            }catch(error){await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');throw error;}
+          }
+          setTimeout(async()=>{try{
+            if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
+            const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
+            if(!diagnosticTokens.has(ticket.token))return;
+            updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,error:null});
+          }catch(error){await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');}},0).unref();
+          return send(200,{serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en FTP-upload worden parallel gevolgd','Een ontvangen bestand wordt ook zonder OCPP-antwoord verwerkt'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
         }
         const commands={
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
@@ -625,8 +636,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           backendReconnect:['reconnectBackend',{}],
           getConfiguration:['GetConfiguration',requestedKeys?.length?{key:requestedKeys}:{}],
           changeConfiguration:['ChangeConfiguration',{key:configKey,value:configValue}],
-          meterIdentification:['DataTransfer',{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}],
-          diagnostics:['GetDiagnostics',{location:diagnosticLocation,retries:2,retryInterval:60,startTime:diagnosticTokens.get(diagnosticToken)?.startTime,stopTime:diagnosticTokens.get(diagnosticToken)?.stopTime}]
+          meterIdentification:['DataTransfer',{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
         if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart','backendReconnect'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
@@ -637,7 +647,6 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             const field=action==='status'?'lastStatusNotification':'lastMeterValues',before=action==='status'?beforeStatus:beforeMeter,deadline=Date.now()+8000;
             while(Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,500));const latest=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(latest?.[field]&&latest[field]!==before){update=latest;break;}}
           }
-          if(action==='diagnostics'){const ticket=diagnosticTokens.get(diagnosticToken);if(ticket)ticket.fileName=result?.fileName||null;const hasFile=!!result?.fileName;diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),quickMode:ticket?.quickMode===true,status:hasFile?(ticket?.localReceiver?'Lokale upload wordt gevolgd':diagnosticFtpUrl?'FTP-upload wordt gevolgd':'Upload verwacht'):'Mislukt',fileName:result?.fileName||null,transport:ticket?.localReceiver?'Lokale FTP + HTTPS':diagnosticFtpUrl?'FTP':'HTTPS',controllerResponse:result,progress:{phase:hasFile?'uploading':'failed',label:hasFile?(ticket?.quickMode?'Snelle upload volgen':'Online upload volgen'):'Geen diagnosebestand ontvangen',percent:hasFile?65:100,estimatedCompleteAt:hasFile?new Date(Date.now()+(ticket?.transferEstimateMs||100_000)).toISOString():undefined}});if(diagnosticFtpUrl&&!ticket?.localReceiver&&ticket?.fileName)scheduleFtpDiagnosticDownload(chargerId,ticket);}
           const steps=[`${chargerId}: ${ocppAction}`,`Homebox antwoord: ${result?.status||result?.fileName||'ontvangen'}`];let status='Remote actie verzonden',advice=null;
           if(action==='status'){
             status=update?'Nieuwe status ontvangen':'Verzoek geaccepteerd, geen nieuw statusbericht ontvangen';

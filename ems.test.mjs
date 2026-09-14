@@ -203,6 +203,18 @@ test('Ontbrekend GetDiagnostics-antwoord gaat door zodra het nieuwe FTP-bestand 
  }finally{if(app)await app.close();}
 });
 
+for(const mode of [
+ {name:'bestaande log',body:{enhancedDebug:false,quickMode:true,fastScan:true,durationSeconds:30}},
+ {name:'snelle log',body:{fastScan:true,durationSeconds:10,debugModules:['modbus']}},
+ {name:'normale log',body:{enhancedDebug:false,quickMode:false,fastScan:true,durationSeconds:30}},
+ {name:'lange log',body:{fastScan:true,longMode:true,durationSeconds:60,debugModules:['modbus'],preserveUnselectedDebug:true}}
+])test(`${mode.name} verwerkt een FTP-bestand zonder GetDiagnostics-antwoord`,async()=>{
+ let lists=0,calls=[],app;const id='ALL-ROUTES-'+mode.name.replace(/\W/g,'').toUpperCase(),fileName=`${id}Diag1789370000.xls`,fleet=[{id,chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[]}];
+ app=await startEMS({port:0,host:'127.0.0.1',hardware:false,authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:1,diagnosticConfigurationTimeoutMs:10,diagnosticFtpUrlOverride:'ftp://test:test@127.0.0.1:9/',diagnosticFtpLister:async()=>++lists===1?[]:[{name:fileName,size:4096,isFile:true,modifiedAt:new Date()}],fleetProvider:()=>fleet,fleetCommander:async(id,action)=>{calls.push(action);if(action==='GetConfiguration')throw Error('Geen configuratieantwoord');if(action==='GetDiagnostics')throw Error('Geen antwoord van de Homebox binnen 120 seconden');return{status:'Accepted'};}});
+ const base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
+ try{const response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id,action:'diagnostics',...mode.body})});assert.ok([200,202].includes(response.status));for(let i=0;i<60;i++){const state=await(await fetch(base+'/api/state',{headers:{Authorization:authorization}})).json(),report=state.diagnostics[id];if(report?.fileName===fileName){assert.notEqual(report.progress?.phase,'failed');assert.ok(calls.includes('GetDiagnostics'));return;}await new Promise(resolve=>setTimeout(resolve,10));}assert.fail(`${mode.name} koppelde het nieuwe FTP-bestand niet`);}finally{await app.close();}
+});
+
 test('Lokale upload-time-out herstelt debug en geeft een nieuwe diagnose vrij',async()=>{
  const original=DIAGNOSTIC_DEBUG_BASE,calls=[],fleet=[{id:'LOCALTIMEOUT',chargerConnected:true,backendConnected:true,status:'Available'}];
  const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticCaptureMs:1,diagnosticLocalTimeoutMs:25,fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{calls.push({action,payload});if(action==='GetConfiguration')return{configurationKey:[{key:'chg_Debug',value:original}]};if(action==='GetDiagnostics')return{fileName:'NOUPLOAD.xls'};return{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64'),request=()=>fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'LOCALTIMEOUT',action:'diagnostics',durationSeconds:30,localReceiverIp:'192.168.1.20',debugModules:['modbus']})});
