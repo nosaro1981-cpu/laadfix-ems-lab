@@ -87,6 +87,10 @@ test('Een verse keepalive bij de randproxy houdt diagnose beschikbaar na een ser
  assert.equal(diagnosticStationResponsive(item,now),true);
  item.gatewayHealth.lastMessageAt=Date.parse('2026-09-14T15:55:00Z');
  assert.equal(diagnosticStationResponsive(item,now),false);
+ item.connectionDiagnostics.chargerTransportResponsive=true;
+ assert.equal(diagnosticStationResponsive(item,now),true);
+ item.commandHealth.degraded=true;
+ assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
  const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};
