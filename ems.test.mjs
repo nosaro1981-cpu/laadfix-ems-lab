@@ -86,16 +86,16 @@ test('Nieuwe FTP-bytes worden tijdens een groeiende upload direct als live voorb
  assert.equal(diagnosticLivePreviewShouldRead(2*1024,2*1024),false);
  assert.equal(diagnosticLivePreviewShouldRead(3*1024,2*1024),true);
 });
-test('Een verse keepalive bij de randproxy houdt diagnose beschikbaar na een serverherstart',()=>{
+test('Alleen een echte OCPP-reactie maakt diagnose beschikbaar na een serverherstart',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');
  const item={chargerConnected:true,commandHealth:{degraded:false},connectionDiagnostics:{lastChargerMessageAt:null},gatewayHealth:{lastMessageAt:Date.parse('2026-09-14T15:59:30Z')}};
- assert.equal(diagnosticStationResponsive(item,now),true);
+ assert.equal(diagnosticStationResponsive(item,now),false);
  item.gatewayHealth.lastMessageAt=Date.parse('2026-09-14T15:55:00Z');
  assert.equal(diagnosticStationResponsive(item,now),false);
  item.connectionDiagnostics.chargerTransportResponsive=true;
- assert.equal(diagnosticStationResponsive(item,now),true);
+ assert.equal(diagnosticStationResponsive(item,now),false);
  item.commandHealth.degraded=true;
- assert.equal(diagnosticStationResponsive(item,now),true);
+ assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
  const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};
