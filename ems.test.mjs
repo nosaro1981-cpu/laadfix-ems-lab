@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,diagnosticCaptureShouldStop,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -63,6 +63,11 @@ test('Een groeiend FTP-bestand is leesbaar zodra alle gevraagde bytes binnen zij
  assert.equal(diagnosticSnapshotIsComplete(94*1024,94*1024),true);
  assert.equal(diagnosticSnapshotIsComplete(94*1024-1,94*1024),false);
  assert.equal(diagnosticSnapshotIsComplete(0,0),false);
+});
+test('Snelle diagnose stopt op bestandsgrootte als een open FTP-bestand nog niet leesbaar is',()=>{
+ assert.equal(diagnosticCaptureShouldStop(20*1024,0,20*1024),true);
+ assert.equal(diagnosticCaptureShouldStop(19*1024,0,20*1024),false);
+ assert.equal(diagnosticCaptureShouldStop(2*1024,0,20*1024,true),true);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
  const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};

@@ -55,6 +55,9 @@ export function diagnosticCaptureDurationMs(ticket={},override=null){
 export function diagnosticSnapshotIsComplete(bytes,wanted){
   return Number(wanted)>0&&Number(bytes)>=Number(wanted);
 }
+export function diagnosticCaptureShouldStop(entrySize,snapshotBytes,captureLimitBytes,finishRequested=false){
+  return Number(entrySize)>=1024&&(finishRequested||Number(entrySize)>=Number(captureLimitBytes)||Number(snapshotBytes)>=Math.floor(Number(captureLimitBytes)*.9));
+}
 export function confirmedMeterIdentityFor(report,history=[]){
   const current=report?.meterIdentity;
   if(current?.model&&current?.confidence==='strong')return{model:current.model,serial:current.serial||null,address:current.address||null,baudrate:current.baudrate||null,confirmedAt:report.receivedAt||report.requestedAt||new Date().toISOString(),sourceFile:report.fileName||null,confidence:'strong'};
@@ -299,7 +302,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             }
           }catch{}
         }
-        if(ticket.fastScan&&entry.size>=1024&&(snapshotContent?.length>=Math.floor(captureLimitBytes*.9)||ticket.finishRequested)){
+        if(ticket.fastScan&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
           // A growing FTP file has no stable EOF. Stop the Ecotap writer first,
           // otherwise a preview can leave a hanging RETR session and the
           // upload keeps growing beyond the configured compact limit.
