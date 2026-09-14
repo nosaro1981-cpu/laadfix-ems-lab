@@ -269,8 +269,13 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const previewClient=new FtpClient(8000),snapshotDone='LAADFIX_DIAGNOSTIC_SNAPSHOT_COMPLETE';
     try{
       await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
+      const normalized=String(remote).replace(/\\/g,'/'),slash=normalized.lastIndexOf('/'),directory=slash>0?normalized.slice(0,slash):'/',fileName=normalized.slice(slash+1),snapshotName=`.laadfix-preview-${fileName}`,snapshotRemote=diagnosticRemotePath(directory,snapshotName),markerRemote=diagnosticRemotePath(directory,`${snapshotName}.req`);
+      // The FTP host copies the bytes that already exist to a stable sibling.
+      // Reading that copy cannot disturb the Homebox process writing the source.
+      await previewClient.uploadFrom(Readable.from([Buffer.from(new Date().toISOString())]),markerRemote);
+      await new Promise(resolve=>setTimeout(resolve,750));
       const sink=new Writable({write(chunk,encoding,callback){const remaining=wanted-bytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));bytes+=part.length;}callback(bytes>=wanted?Error(snapshotDone):null);}});
-      try{await previewClient.downloadTo(sink,remote,startAt);}catch(error){
+      try{await previewClient.downloadTo(sink,snapshotRemote,startAt);}catch(error){
         // basic-ftp can replace the sentinel with a generic stream/connection
         // error when the Ecotap controller still has the remote file open.
         // The snapshot is nevertheless valid once every requested byte arrived.
@@ -345,7 +350,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);
             // Show the result immediately; archiving and remote cleanup must
             // never keep the progress screen open.
-            void (async()=>{let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}await rememberDiagnosticReport(chargerId,{...completed,textFileName});try{const cleanup=new FtpClient(8000);try{const{directory:cleanupDirectory}=await diagnosticFtpAccess(cleanup);await cleanup.remove(diagnosticRemotePath(cleanupDirectory,fileName));}finally{cleanup.close();}}catch{}})();
+            void (async()=>{let textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}await rememberDiagnosticReport(chargerId,{...completed,textFileName});try{const cleanup=new FtpClient(8000);try{const{directory:cleanupDirectory}=await diagnosticFtpAccess(cleanup);await cleanup.remove(diagnosticRemotePath(cleanupDirectory,fileName));try{await cleanup.remove(diagnosticRemotePath(cleanupDirectory,`.laadfix-preview-${fileName}`));}catch{}}finally{cleanup.close();}}catch{}})();
             return;
           }
         }
@@ -360,6 +365,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const restored=await restoreDiagnosticDebug(ticket);
         await rememberDiagnosticReport(chargerId,{...report,textFileName,downloadReady:true,enhancedDebug:!!ticket.enhancedDebug,debugRestoreStatus:ticket.originalDebug?(ticket.debugRestored||restored?'Originele debuginstelling hersteld':ticket.debugRestoreStatus):null});
         try{await client.remove(remote);}catch{}
+        try{await client.remove(diagnosticRemotePath(directory,`.laadfix-preview-${fileName}`));}catch{}
         releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);
         return;
       }catch(error){
