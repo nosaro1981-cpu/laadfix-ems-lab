@@ -55,6 +55,17 @@ test('Een nieuwe Render-relay controleert de bestaande Homeboxsessie actief', {t
   assert.equal(app.state.commandHealth.status,'healthy');assert.equal(app.state.connectionDiagnostics.chargerTrafficSeen,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_readiness_probe'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+test('Een reagerende Homeboxsessie blijft actief en ruimt een stille duplicaatsessie op', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'DUPLICATE',upstream:'ws://127.0.0.1:'+backend.address().port+'/DUPLICATE',meterLogFile:null,backendReconnectProbeDelayMs:20,backendCommandTimeoutMs:100});
+ let charger,up,duplicate;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/DUPLICATE','ocpp1.6');await once(charger,'open');[up]=await connected;
+  const call=JSON.parse((await once(charger,'message'))[0].toString());charger.send(JSON.stringify([3,call[1],{status:'Accepted'}]));await new Promise(resolve=>setTimeout(resolve,10));
+  duplicate=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/DUPLICATE','ocpp1.6');duplicate.on('error',()=>{});const [,response]=await once(duplicate,'unexpected-response');assert.equal(response.statusCode,409);duplicate.terminate();
+  assert.equal(charger.readyState,WebSocket.OPEN);assert.equal(app.state.connectionStats.sessions,1);assert.equal(app.state.chargerConnected,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='duplicate_charger_rejected'));
+ }finally{duplicate?.terminate();charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
 test('Relay wijst een andere laadpaal-ID af', {timeout:5000},async()=>{
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TEST',upstream:'ws://127.0.0.1/TEST',meterLogFile:null});
  try{const ws=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/OTHER','ocpp1.6');ws.on('error',()=>{});const [,res]=await once(ws,'unexpected-response');assert.equal(res.statusCode,403);ws.terminate();assert.equal(app.state.chargerConnected,false);assert.equal(app.state.connectionDiagnostics.lastFailureType,'path');assert.equal(app.state.connectionDiagnostics.rejectedUpgrades,1);assert.ok(app.state.connectionTimeline.some(row=>row.type==='rejected'));}finally{await app.close();}

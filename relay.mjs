@@ -121,8 +121,11 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     else if(!hasProtocol)rejected={reason:'protocol',label:'OCPP-subprotocol ocpp1.6 ontbreekt'};
     if(rejected){Object.assign(state.connectionDiagnostics,{stage:'rejected',lastFailureAt:now,lastFailureType:rejected.reason,lastFailureLabel:rejected.label,lastFailureMessage:rejected.label,lastAdvice:rejected.reason==='path'?'Controleer com_Endpoint, het geheime proxypad en #OSN#.':'Controleer of de controller OCPP1.6J met WebSocket-subprotocol ocpp1.6 gebruikt.',rejectedUpgrades:state.connectionDiagnostics.rejectedUpgrades+1,lastRejectedUpgrade:{time:now,reason:rejected.reason,label:rejected.label}});state.error=rejected.label;trace('rejected','error','OCPP-aanmelding geweigerd',rejected.label,now);log('OCPP-aanmelding geweigerd',rejected.label);socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
     state.connectionDiagnostics.lastAcceptedAt=now;
-    // A controller can reconnect before the previous TCP close has propagated.
-    // The newest authenticated session wins, avoiding a retry loop on 409.
+    // The stable ingress can briefly retain two mobile TCP sessions for the same
+    // controller. Keep the session that has already proven it can exchange OCPP;
+    // a 409 makes the ingress close only the silent duplicate client socket.
+    const activeResponsive=active&&active.down.readyState===WebSocket.OPEN&&state.connectionDiagnostics.sessionId===active.sessionId&&(state.connectionDiagnostics.chargerTrafficSeen||state.commandHealth.status==='healthy');
+    if(activeResponsive){trace('duplicate_charger_rejected','warning','Dubbele Homeboxverbinding opgeruimd','De reagerende OCPP-sessie blijft actief');socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n');return;}
     if(active){active.up?.terminate();active.down.terminate();active=null;}
     wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));
   });
