@@ -6,10 +6,18 @@ import {startEMS} from './ems-server.mjs';
 
 const listen=(server,port,host)=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve);});
 
-export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,publicOcppHost=process.env.OCPP_PUBLIC_HOST||'ocpp.throbbing-limit-d29f.workers.dev',id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json'}={}){
+export function reconcileGatewayState(item,gateway,now=Date.now()){
+  if(!gateway?.ok||now-Number(gateway.checkedAt||0)>6000)return item;
+  const chargerConnected=gateway.chargerConnected===true;
+  return {...item,chargerConnected,backendConnected:chargerConnected&&gateway.backendConnected===true,gatewayHealth:{verified:true,version:gateway.gatewayVersion||null,socketCount:Number(gateway.socketCount||0),checkedAt:new Date(gateway.checkedAt).toISOString(),connectedAt:gateway.connectedAt||null,lastMessageAt:gateway.lastMessageAt||null}};
+}
+
+export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,publicOcppHost=process.env.OCPP_PUBLIC_HOST||'ocpp.throbbing-limit-d29f.workers.dev',id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json',gatewayHealthProvider=null,gatewayHealthIntervalMs=1500}={}){
   if(!publicHost||!pathSecret||!authUser||!authPassword)throw Error('PUBLIC_HOST, OCPP_PATH_SECRET, DASHBOARD_USER en DASHBOARD_PASSWORD zijn verplicht');
   let relay=null,ems=null;
   const relays=new Map();
+  const gatewayStates=new Map();
+  let gatewayHealthTimer=null;
   const validId=value=>/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(value);
   const routeFor=chargerId=>chargerId===id?upstream:upstreamTemplate.replaceAll('#OSN#',chargerId).replaceAll('{id}',chargerId);
   const safeFileId=value=>value.replace(/[^A-Za-z0-9._-]/g,'_');
@@ -19,7 +27,16 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
     relays.set(chargerId,promise);
     try{const app=await promise;relays.set(chargerId,app);return app;}catch(error){relays.delete(chargerId);throw error;}
   }
-  const fleetState=()=>Array.from(relays.entries()).flatMap(([chargerId,value])=>value?.state?[{id:chargerId,chargerConnected:value.state.chargerConnected,backendConnected:value.state.backendConnected,status:value.state.connectors?.[1]?.status||'Onbekend',errorCode:value.state.connectors?.[1]?.errorCode||null,lastSeen:value.state.lastSeen,lastHeartbeat:value.state.lastHeartbeat,lastStatusNotification:value.state.lastStatusNotification,lastMeterValues:value.state.lastMeterValues,lastMeterForwarded:value.state.lastMeterForwarded,meterHistoryCount:value.state.meterHistoryCount,forwarded:value.state.forwarded,received:value.state.received,upstream:value.state.upstream,error:value.state.error,boot:value.state.boot,connectors:value.state.connectors,meterValues:value.state.meterValues,meterHistory:value.state.meterHistory,events:value.state.events?.slice(0,30),ocppMessages:value.state.ocppMessages?.slice(0,200),activeTransaction:value.state.activeTransaction,transactionId:value.state.transactionId,lastLocalCommand:value.state.lastLocalCommand,commandHealth:value.state.commandHealth,configuration:value.state.configuration,configurationUpdatedAt:value.state.configurationUpdatedAt,diagnosticsStatus:value.state.diagnosticsStatus,diagnosticsStatusAt:value.state.diagnosticsStatusAt,remoteDiagnostics:value.state.remoteDiagnostics,connectionStats:value.state.connectionStats,connectionDiagnostics:value.state.connectionDiagnostics,connectionTimeline:value.state.connectionTimeline?.slice(0,40)}]:[]);
+  const fleetState=()=>Array.from(relays.entries()).flatMap(([chargerId,value])=>value?.state?[reconcileGatewayState({id:chargerId,chargerConnected:value.state.chargerConnected,backendConnected:value.state.backendConnected,status:value.state.connectors?.[1]?.status||'Onbekend',errorCode:value.state.connectors?.[1]?.errorCode||null,lastSeen:value.state.lastSeen,lastHeartbeat:value.state.lastHeartbeat,lastStatusNotification:value.state.lastStatusNotification,lastMeterValues:value.state.lastMeterValues,lastMeterForwarded:value.state.lastMeterForwarded,meterHistoryCount:value.state.meterHistoryCount,forwarded:value.state.forwarded,received:value.state.received,upstream:value.state.upstream,error:value.state.error,boot:value.state.boot,connectors:value.state.connectors,meterValues:value.state.meterValues,meterHistory:value.state.meterHistory,events:value.state.events?.slice(0,30),ocppMessages:value.state.ocppMessages?.slice(0,200),activeTransaction:value.state.activeTransaction,transactionId:value.state.transactionId,lastLocalCommand:value.state.lastLocalCommand,commandHealth:value.state.commandHealth,configuration:value.state.configuration,configurationUpdatedAt:value.state.configurationUpdatedAt,diagnosticsStatus:value.state.diagnosticsStatus,diagnosticsStatusAt:value.state.diagnosticsStatusAt,remoteDiagnostics:value.state.remoteDiagnostics,connectionStats:value.state.connectionStats,connectionDiagnostics:value.state.connectionDiagnostics,connectionTimeline:value.state.connectionTimeline?.slice(0,40)},gatewayStates.get(chargerId))]:[]);
+  const readGatewayHealth=gatewayHealthProvider||(process.env.RENDER?async chargerId=>{
+    const url=new URL('/health',`http://${publicOcppHost}`);url.searchParams.set('station',chargerId);
+    const response=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(1200)});
+    if(!response.ok)throw Error('Gatewaystatus niet beschikbaar');return response.json();
+  }:null);
+  async function refreshGatewayStates(){
+    if(!readGatewayHealth)return;
+    await Promise.all(Array.from(relays.keys()).map(async chargerId=>{try{const state=await readGatewayHealth(chargerId);if(state?.station&&state.station!==chargerId)throw Error('Verkeerd laadstation in gatewaystatus');gatewayStates.set(chargerId,{...state,checkedAt:Date.now()});}catch{gatewayStates.delete(chargerId);}}));
+  }
   async function changeFleetRoute(chargerId,nextUpstream){
     if(!validId(chargerId))throw Error('Ongeldige OCPP-ID');
     const chargerRelay=await getRelay(chargerId);
@@ -60,10 +77,13 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   await listen(gateway,port,host);
   try{
     relay=await getRelay(id);
+    await refreshGatewayStates();
     ems=await startEMS({port:0,host:'127.0.0.1',hardware:true,ledHardware:false,publicHost,authUser,authPassword,relayMonitorPort:relay.monitorPort,fleetProvider:fleetState,fleetRegistrar:registerFleetStation,fleetRouteChanger:changeFleetRoute,fleetCommander:fleetCommand});
+    if(readGatewayHealth){gatewayHealthTimer=setInterval(refreshGatewayStates,Math.max(500,gatewayHealthIntervalMs));gatewayHealthTimer.unref?.();}
   }catch(error){if(ems)await ems.close();if(relay)await relay.close();await new Promise(resolve=>gateway.close(resolve));throw error;}
   return {port:gateway.address().port,relay,ems,relays,close:async()=>{
     // Stop accepting connections, then close the relays that keep the gateway open.
+    if(gatewayHealthTimer)clearInterval(gatewayHealthTimer);
     const gatewayClosed=new Promise(resolve=>gateway.close(resolve));
     for(const value of relays.values()){try{await (await value).close();}catch{}}
     await ems.close();
