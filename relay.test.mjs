@@ -192,11 +192,11 @@ test('Online route herstelt een uitgeschakelde WebSocket-ping zonder de Homebox 
 
 test('Proxy bevestigt een stille Homebox met WebSocket ping en pong', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
- const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TRANSPORT',upstream:'ws://127.0.0.1:'+backend.address().port+'/TRANSPORT',meterLogFile:null,transportPingIntervalMs:1000,transportPongTimeoutMs:3000});
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TRANSPORT',upstream:'ws://127.0.0.1:'+backend.address().port+'/TRANSPORT',meterLogFile:null,transportPingIntervalMs:1000,transportPongTimeoutMs:3000,backendReconnectProbeDelayMs:1500,backendReadinessTimeoutMs:50});
  let charger,up;
  try{
   const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/TRANSPORT','ocpp1.6');await once(charger,'open');[up]=await connected;
-  await new Promise(resolve=>setTimeout(resolve,1200));
+  await new Promise(resolve=>setTimeout(resolve,1800));
   assert.equal(app.state.connectionDiagnostics.chargerTransportResponsive,true);
   assert.ok(app.state.connectionDiagnostics.lastChargerPongAt);
   assert.equal(charger.readyState,WebSocket.OPEN);

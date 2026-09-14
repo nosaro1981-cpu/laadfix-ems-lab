@@ -66,8 +66,18 @@ export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
 }
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
   const raw=item?.connectionDiagnostics?.lastChargerMessageAt||item?.gatewayHealth?.lastMessageAt,last=typeof raw==='number'?raw:raw?Date.parse(raw):NaN;
-  return !!item?.chargerConnected&&!item?.commandHealth?.degraded&&(item?.connectionDiagnostics?.chargerTransportResponsive===true||!raw||Number.isFinite(last)&&now-last<=maxAgeMs);
+  return !!item?.chargerConnected&&(item?.connectionDiagnostics?.chargerTransportResponsive===true||!item?.commandHealth?.degraded&&(!raw||Number.isFinite(last)&&now-last<=maxAgeMs));
 }
+const KNOWN_DIAGNOSTIC_CONFIGURATION={
+  'RBC-0000033':[
+    ['HeartbeatInterval','900'],['WebSocketPingInterval','50'],['NumberOfConnectors','1'],['chg_ChannelsEnabled','1'],
+    ['chg_KWH1','EASTR_SDM72D,1,9600,N,1'],['chg_KWH2','None,2,9600,N,1'],
+    ['chg_Debug','warn=1,error=1,date=1,syslog=1,gsm=3,events=1,com=1,ocpp=7,eth=1,grid=0,ctrl=3,general=1,sensors=0,fw=1,modbus=0,canbus=0,sys=0'],
+    ['grid_CommChannel','canbus'],['grid_Role','station_ctrl'],['grid_SupervisorClientCount','0'],['grid_InstallationMaxCurrent','32'],
+    ['com_ProtCh','Eth'],['com_ProtType','OCPP1.6J'],['gsm_Model','BG95-M3'],['gsm_SigQ','20'],
+    ['eth_cfg','type=dhcp,ip=0.0.0.0,netmask=0.0.0.0,dns=0.0.0.0,gw=0.0.0.0']
+  ].map(([key,value])=>({key,value,readonly:false}))
+};
 export function confirmedMeterIdentityFor(report,history=[]){
   const current=report?.meterIdentity;
   if(current?.model&&current?.confidence==='strong')return{model:current.model,serial:current.serial||null,address:current.address||null,baudrate:current.baudrate||null,confirmedAt:report.receivedAt||report.requestedAt||new Date().toISOString(),sourceFile:report.fileName||null,confidence:'strong'};
@@ -610,10 +620,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             active=!!item?.activeTransaction||['Charging','Preparing','Finishing'].includes(item?.status);ticket.freshStart=reconnected;
             ticket.sessionNote=reconnected?(reset?.status==='Accepted'?'Nieuwe controllersessie gedetecteerd':`Soft reset meldde ${reset?.status||'geen bevestiging'}, maar de werkelijke herstart is gedetecteerd`):`Soft reset ${reset?.status||'niet bevestigd'}; geen nieuwe sessie bevestigd, het tijdvak vanaf vóór het resetcommando wordt gebruikt`;
           }
-          const configurationTimeout=Math.max(1000,Math.min(30_000,Number(diagnosticConfigurationTimeoutMs)||10_000)),cachedRows=Array.isArray(item.configuration)?item.configuration:[];
+          const configurationTimeout=Math.max(1000,Math.min(30_000,Number(diagnosticConfigurationTimeoutMs)||10_000)),liveCachedRows=Array.isArray(item.configuration)?item.configuration:[],cachedRows=liveCachedRows.length?liveCachedRows:(KNOWN_DIAGNOSTIC_CONFIGURATION[chargerId]||[]);
           updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele configuratie lezen',percent:14,estimatedCompleteAt:new Date(Date.now()+configurationTimeout+(ticket.durationSeconds||300)*1000+(ticket.transferEstimateMs||30_000)).toISOString()},{status:ticket.sessionNote||'Actuele configuratie lezen'});
           let read=null,rows=[],configurationWarning=null;
-          try{read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];}catch(error){configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; laatst bekende instellingen worden gebruikt.`;rows=cachedRows;}
+          try{read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];}catch(error){configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; ${liveCachedRows.length?'de laatst ontvangen':'de op 14-9-2026 uitgelezen'} controllerinstellingen worden gebruikt.`;rows=cachedRows;}
           let originalDebug=rows.find(row=>row.key==='chg_Debug')?.value||cachedRows.find(row=>row.key==='chg_Debug')?.value;
           if(!originalDebug&&!configurationWarning)try{read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']},{timeoutMs:configurationTimeout});const targetedRows=read?.configurationKey||read?.result?.configurationKey||[];rows=targetedRows.length?targetedRows:rows;originalDebug=targetedRows.find(row=>row.key==='chg_Debug')?.value;}catch(error){configurationWarning=`Debuginstelling antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden.`;}
           if(!originalDebug)configurationWarning=(configurationWarning?configurationWarning+' ':'')+'De proxy wijzigt daarom geen debuginstellingen en vraagt veilig een standaardlog op.';
