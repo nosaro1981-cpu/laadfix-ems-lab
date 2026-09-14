@@ -77,9 +77,9 @@ test('Een FTP-momentopname wordt pas gelezen nadat de upload stabiel is',()=>{
 });
 test('Een verse keepalive bij de randproxy houdt diagnose beschikbaar na een serverherstart',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');
- const item={chargerConnected:true,commandHealth:{degraded:false},connectionDiagnostics:{lastChargerMessageAt:null},gatewayHealth:{lastMessageAt:'2026-09-14T15:59:30Z'}};
+ const item={chargerConnected:true,commandHealth:{degraded:false},connectionDiagnostics:{lastChargerMessageAt:null},gatewayHealth:{lastMessageAt:Date.parse('2026-09-14T15:59:30Z')}};
  assert.equal(diagnosticStationResponsive(item,now),true);
- item.gatewayHealth.lastMessageAt='2026-09-14T15:55:00Z';
+ item.gatewayHealth.lastMessageAt=Date.parse('2026-09-14T15:55:00Z');
  assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{

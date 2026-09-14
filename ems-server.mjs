@@ -62,7 +62,7 @@ export function diagnosticFtpSnapshotSafe(entrySize,previousSize,stablePolls){
   return Number(entrySize)>=1024&&previousSize!==null&&Number(entrySize)===Number(previousSize)&&Number(stablePolls)>=2;
 }
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
-  const raw=item?.connectionDiagnostics?.lastChargerMessageAt||item?.gatewayHealth?.lastMessageAt,last=raw?Date.parse(raw):NaN;
+  const raw=item?.connectionDiagnostics?.lastChargerMessageAt||item?.gatewayHealth?.lastMessageAt,last=typeof raw==='number'?raw:raw?Date.parse(raw):NaN;
   return !!item?.chargerConnected&&!item?.commandHealth?.degraded&&(!raw||Number.isFinite(last)&&now-last<=maxAgeMs);
 }
 export function confirmedMeterIdentityFor(report,history=[]){
