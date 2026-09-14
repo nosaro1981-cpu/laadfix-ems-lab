@@ -74,7 +74,7 @@ test('Cloudflare gateway plant na een mislukte herstelpoging snel een nieuwe pog
   assert.ok(alarms[0]-Date.now()<=2500);
 });
 
-test('Cloudflare gateway vervangt ook een stille backendverbinding zonder laderbericht', async () => {
+test('Cloudflare gateway bewaart een stille open backendverbinding', async () => {
   const alarms=[];
   let closed=false,opened=0;
   const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'})};
@@ -85,11 +85,25 @@ test('Cloudflare gateway vervangt ook een stille backendverbinding zonder laderb
   };
   const gateway=new OcppGateway(ctx);
   gateway.backend={readyState:1,close:()=>{closed=true;}};
-  gateway.backendHealthy=async()=>false;
   gateway.openBackend=async()=>{opened+=1;gateway.backend={readyState:1};};
   await gateway.alarm();
-  assert.equal(closed,true);
-  assert.equal(opened,1);
+  assert.equal(closed,false);
+  assert.equal(opened,0);
+  assert.equal(alarms.length,1);
+});
+
+test('Een stille maar open backendverbinding blijft intact wanneer de lader weer data stuurt', async () => {
+  const sent=[];
+  const charger={readyState:1,deserializeAttachment:()=>({path:'/ocpp/test/charger'}),serializeAttachment:()=>{}};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{put:async()=>{},setAlarm:async()=>{},deleteAlarm:async()=>{}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  gateway.backend={readyState:1,send:message=>sent.push(message)};
+  gateway.backendOpenedAt=Date.now()-600000;
+  gateway.lastBackendMessageAt=Date.now()-600000;
+  await gateway.webSocketMessage(charger,'[2,"heartbeat","Heartbeat",{}]');
+  assert.deepEqual(sent,['[2,"heartbeat","Heartbeat",{}]']);
+  assert.equal(gateway.backend.readyState,1);
 });
 
 test('Cloudflare wake activeert herstel voor een bewaarde Homeboxsocket', async () => {

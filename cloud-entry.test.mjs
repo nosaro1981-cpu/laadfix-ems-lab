@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {reconcileGatewayState} from './cloud-entry.mjs';
 
-test('Actuele Cloudflare-status corrigeert een verweesde open Render-socket',()=>{
+test('Een open lokale OCPP-socket blijft zonder tijdslimiet leidend',()=>{
   const now=Date.now();
-  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,gatewayVersion:'2026-09-14.2',checkedAt:now},now);
-  assert.equal(state.chargerConnected,false);
-  assert.equal(state.backendConnected,false);
+  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true,lastSeen:new Date(now-600000).toISOString()},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,gatewayVersion:'2026-09-14.3',checkedAt:now},now);
+  assert.equal(state.chargerConnected,true);
+  assert.equal(state.backendConnected,true);
   assert.equal(state.gatewayHealth.verified,true);
   assert.equal(state.gatewayHealth.socketCount,0);
+  assert.equal(state.gatewayHealth.disagreesWithLocal,true);
 });
 
 test('Verouderde gatewaystatus overschrijft de lokale status niet',()=>{
@@ -17,10 +18,10 @@ test('Verouderde gatewaystatus overschrijft de lokale status niet',()=>{
   assert.equal(reconcileGatewayState(local,{ok:true,chargerConnected:false,checkedAt:now-7000},now),local);
 });
 
-test('Vers OCPP-verkeer weegt zwaarder dan een fout-negatieve gatewaycontrole',()=>{
+test('Positieve gatewaystatus kan een nog niet bijgewerkte lokale status aanvullen',()=>{
   const now=Date.now();
-  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true,lastSeen:new Date(now-30000).toISOString()},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,checkedAt:now},now);
+  const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:false,backendConnected:false},{ok:true,chargerConnected:true,backendConnected:true,socketCount:1,checkedAt:now},now);
   assert.equal(state.chargerConnected,true);
   assert.equal(state.backendConnected,true);
-  assert.equal(state.gatewayHealth.disagreesWithTraffic,true);
+  assert.equal(state.gatewayHealth.disagreesWithLocal,false);
 });

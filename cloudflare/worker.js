@@ -2,11 +2,10 @@ const OCPP_PATH_PREFIX = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/';
 const PRIMARY_CHARGER_ID = 'RBC-0000032';
 const PRIMARY_PATH = OCPP_PATH_PREFIX + PRIMARY_CHARGER_ID;
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
-const BACKEND_STALE_MS = 150_000;
 const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
-export const GATEWAY_VERSION = '2026-09-14.2';
+export const GATEWAY_VERSION = '2026-09-14.3';
 
 export class OcppGateway {
   constructor(ctx) {
@@ -69,27 +68,14 @@ export class OcppGateway {
     }
   }
 
-  async backendHealthy() {
-    try {
-      const response = await fetch(RENDER_ORIGIN + '/healthz', {cf:{cacheTtl:0,cacheEverything:false}});
-      return response.ok;
-    } catch {
-      return false;
-    }
-  }
-
   async alarm() {
     const charger = this.connectedCharger();
     if (!charger) return;
     const attachment = charger.deserializeAttachment() || {};
     try {
       if (this.backend?.readyState === WebSocket.OPEN) {
-        if (await this.backendHealthy()) {
-          await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
-          return;
-        }
-        try { this.backend.close(1012, 'Render tijdelijk niet bereikbaar'); } catch {}
-        this.backend = null;
+        await this.ctx.storage.setAlarm(Date.now() + BACKEND_WATCHDOG_MS);
+        return;
       }
       await this.openBackend(attachment.path || PRIMARY_PATH);
       this.backendRetryAttempt = 0;
@@ -114,7 +100,7 @@ export class OcppGateway {
     const url = new URL(request.url);
     charger.serializeAttachment({path:url.pathname + url.search,connectedAt:Date.now(),lastMessageAt:0});
     // Keep the charger connected at the edge while Render is replaced. The
-    // backend leg is reopened independently when it becomes stale or closes.
+    // backend leg is reopened independently when it closes or fails an active check.
     this.ctx.acceptWebSocket(charger, ['charger']);
     console.log(JSON.stringify({event:'charger_socket_accepted',path:url.pathname,existing:this.ctx.getWebSockets('charger').length}));
     const current=this.connectedCharger(charger);
@@ -190,17 +176,9 @@ export class OcppGateway {
         if (candidate !== ws && candidate !== previous) candidate.close(1012,'Nieuwe ladersessie actief');
       }
     }
-    const backendSilentFor = Date.now() - Math.max(this.lastBackendMessageAt, this.backendOpenedAt);
-    if (this.backend?.readyState === WebSocket.OPEN && backendSilentFor <= BACKEND_STALE_MS) {
+    if (this.backend?.readyState === WebSocket.OPEN) {
       this.backend.send(message);
       return;
-    }
-    if (this.backend) {
-      try { this.backend.close(1012, 'Backendverbinding vernieuwen'); } catch {}
-      this.backend = null;
-      this.backendOpenedAt = 0;
-      this.lastBackendMessageAt = 0;
-      console.log(JSON.stringify({event:'backend_stale',silentMs:backendSilentFor}));
     }
     if (this.queue.length >= 50) {
       this.closeActive(1011, 'Wachtrij vol');
