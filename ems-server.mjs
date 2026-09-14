@@ -52,6 +52,9 @@ export function diagnosticConfigurationSnapshot(configuration=[]){
 export function diagnosticCaptureDurationMs(ticket={},override=null){
   return override===null?Math.max(ticket.fastScan?10_000:30_000,(ticket.durationSeconds??300)*1000):Math.max(1,Number(override));
 }
+export function diagnosticSnapshotIsComplete(bytes,wanted){
+  return Number(wanted)>0&&Number(bytes)>=Number(wanted);
+}
 export function confirmedMeterIdentityFor(report,history=[]){
   const current=report?.meterIdentity;
   if(current?.model&&current?.confidence==='strong')return{model:current.model,serial:current.serial||null,address:current.address||null,baudrate:current.baudrate||null,confirmedAt:report.receivedAt||report.requestedAt||new Date().toISOString(),sourceFile:report.fileName||null,confidence:'strong'};
@@ -254,7 +257,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     try{
       await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
       const sink=new Writable({write(chunk,encoding,callback){const remaining=wanted-bytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));bytes+=part.length;}callback(bytes>=wanted?Error(snapshotDone):null);}});
-      try{await previewClient.downloadTo(sink,remote,startAt);}catch(error){if(!String(error?.message||error).includes(snapshotDone))throw error;}
+      try{await previewClient.downloadTo(sink,remote,startAt);}catch(error){
+        // basic-ftp can replace the sentinel with a generic stream/connection
+        // error when the Ecotap controller still has the remote file open.
+        // The snapshot is nevertheless valid once every requested byte arrived.
+        if(!diagnosticSnapshotIsComplete(bytes,wanted))throw error;
+      }
       return Buffer.concat(chunks);
     }finally{previewClient.close();}
   };
