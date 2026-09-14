@@ -20,6 +20,7 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   const gatewayStates=new Map();
   let gatewayHealthTimer=null;
   const validId=value=>/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(value);
+  const edgeControlHost=process.env.OCPP_EDGE_CONTROL_HOST||(()=>{try{return new URL(process.env.DIAGNOSTICS_FTP_URL).hostname;}catch{return publicOcppHost;}})();
   const routeFor=chargerId=>chargerId===id?upstream:upstreamTemplate.replaceAll('#OSN#',chargerId).replaceAll('{id}',chargerId);
   const safeFileId=value=>value.replace(/[^A-Za-z0-9._-]/g,'_');
   async function getRelay(chargerId){
@@ -48,7 +49,7 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   async function fleetCommand(chargerId,action,payload,{timeoutMs}={}){
     if(!validId(chargerId))throw Error('Ongeldige OCPP-ID');
     if(action==='edgeReconnect'){
-      const url=new URL('/control/reconnect',`http://${publicOcppHost}`);url.searchParams.set('station',chargerId);
+      const url=new URL('/control/reconnect',`http://${edgeControlHost}`);url.searchParams.set('station',chargerId);
       const response=await fetch(url,{method:'POST',headers:{'X-LaadFix-Key':pathSecret},signal:AbortSignal.timeout(5000)});
       const result=await response.json();if(!response.ok)throw Error(result.error||'Ladersessie kon niet worden vernieuwd');return result;
     }
