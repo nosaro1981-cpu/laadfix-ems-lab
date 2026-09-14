@@ -336,6 +336,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         }
         if(ticket.fastScan&&snapshotContent?.length&&diagnosticCaptureShouldStop(entry.size,snapshotContent.length,captureLimitBytes,ticket.finishRequested)){
           ticket.finishRequested=true;
+          if(!ticket.abortRequested){
+            ticket.abortRequested=await requestFtpAbort(ticket);
+            if(ticket.abortRequested)updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Veilige stop naar FTP-overdracht gestuurd',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs*2).toISOString()},{status:'Ontvangen gegevens worden afgerond'});
+          }
           if(!snapshotSafe)throw Error('Controller rondt de FTP-upload nog af');
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
@@ -574,8 +578,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const chargerId=String(body.id||''),ticket=activeFtpTickets.get(chargerId)||[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
         if(!ticket)throw Error('Er loopt geen diagnose voor dit laadstation');
         ticket.fastScan=true;ticket.finishRequested=true;
-        updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens analyseren',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:'Handmatig afronden aangevraagd'});
-        return send(202,{status:'De veilig gekopieerde gegevens worden direct geanalyseerd; de controller mag zijn overdracht normaal afronden'});
+        ticket.abortRequested=await requestFtpAbort(ticket)||ticket.abortRequested;
+        updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.abortRequested?'FTP-overdracht wordt veilig gestopt':'Huidige live gegevens analyseren',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs*2+5000).toISOString()},{status:ticket.abortRequested?'Stopopdracht verzonden':'Handmatig afronden aangevraagd'});
+        return send(202,{status:ticket.abortRequested?'De FTP-overdracht wordt gestopt; de OCPP-verbinding blijft open en de ontvangen gegevens worden geanalyseerd.':'De veilig gekopieerde gegevens worden direct geanalyseerd.'});
       }
       if(req.url==='/api/fleet-command'){
         if(typeof fleetCommander!=='function')throw Error('Vlootbediening is alleen online beschikbaar');
