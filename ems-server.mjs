@@ -298,10 +298,12 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
         let snapshotContent=null;
-        // Reading an Ecotap upload through FTP while its STOR session is still
-        // open can make vsftpd abort the writer. Wait for two unchanged polls.
+        // Ordinary previews wait for a stable file. Compact diagnoses are the
+        // exception: once their byte limit (or an explicit finish request) is
+        // reached, capture that bounded snapshot and finish immediately.
         const snapshotSafe=diagnosticFtpSnapshotSafe(entry.size,previousSize,stable);
-        if(snapshotSafe&&ticket.previewSourceSize!==entry.size){
+        const compactStopRequested=ticket.fastScan&&(ticket.finishRequested||entry.size>=captureLimitBytes);
+        if((snapshotSafe||compactStopRequested)&&ticket.previewSourceSize!==entry.size){
           try{
             const snapshotSource=await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit);
             snapshotContent=compactReadableControllerLog(snapshotSource,captureLimitBytes);
@@ -312,9 +314,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             }
           }catch{}
         }
-        if(ticket.fastScan&&snapshotSafe&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
+        if(ticket.fastScan&&(snapshotSafe||compactStopRequested)&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
           ticket.finishRequested=true;
-          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Upload gereed · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
           const content=snapshotContent?.length?snapshotContent:compactReadableControllerLog(await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit),captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:entry.size>content.length,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
