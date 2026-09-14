@@ -336,6 +336,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         }
         if(ticket.fastScan&&snapshotContent?.length&&diagnosticCaptureShouldStop(entry.size,snapshotContent.length,captureLimitBytes,ticket.finishRequested)){
           ticket.finishRequested=true;
+          if(!snapshotSafe)throw Error('Controller rondt de FTP-upload nog af');
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
           const content=snapshotContent?.length?snapshotContent:compactReadableControllerLog(await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit),captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,liveRaw:readableControllerLog(content).slice(-captureLimitBytes),truncated:entry.size>content.length,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
@@ -632,10 +633,11 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!originalDebug)configurationWarning=(configurationWarning?configurationWarning+' ':'')+'De proxy wijzigt daarom geen debuginstellingen en vraagt veilig een standaardlog op.';
           ticket.configurationWarning=configurationWarning;
           const combinedConfiguration=new Map([...cachedRows,...rows].map(row=>[String(row.key||''),{key:row.key,value:row.value,readonly:!!row.readonly}]));ticket.configuration=[...combinedConfiguration.values()];ticket.meterSettings=ticket.configuration.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
+          ticket.debugModules=Array.isArray(body.debugModules)?body.debugModules:[];
           const configurationPreview={...buildDiagnosticReport(chargerId,ticket,Buffer.from('00:00:00:Actuele configuratie ontvangen\n')),status:'Live uitlezing',liveStage:'configuration',bytes:0,receivedAt:new Date().toISOString()};
           ticket.livePreview=configurationPreview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),livePreview:configurationPreview});
-          const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[];ticket.debugModules=selectedDebugModules;
+          const selectedDebugModules=ticket.debugModules;
           if(originalDebug){
             updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Gekozen debugmodules verhogen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Gekozen debug tijdelijk verhogen'});
             const maximumDebug=selectedDebugModules.length?(body.preserveUnselectedDebug===true?enhanceSelectedDiagnosticDebug(originalDebug,selectedDebugModules):selectDiagnosticDebug(selectedDebugModules)):maximizeDiagnosticDebug(originalDebug);ticket.originalDebug=originalDebug;ticket.maximumDebug=maximumDebug;
@@ -660,7 +662,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
               const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);
               ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;
               const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
-              if(ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug direct herstellen',percent:61},{status:'Diagnosebestand gevonden · debug herstellen'});await restoreDiagnosticDebug(ticket);}
+              if(ticket.originalDebug)ticket.debugRestoreStatus='Wacht tot de Homebox de FTP-overdracht heeft gesloten';
               if(!diagnosticTokens.has(ticket.token))return;
               updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus,error:null});
             }catch(error){
