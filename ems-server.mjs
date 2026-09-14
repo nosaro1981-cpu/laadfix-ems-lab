@@ -140,7 +140,7 @@ export function mergePrimaryFleetState(charger, fleet) {
   return primary ? { ...charger, ...primary, relayReachable: true } : charger;
 }
 
-export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000,diagnosticConfigurationTimeoutMs=10_000,diagnosticFtpUrlOverride=null,diagnosticFtpLister=null}={}) {
+export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHardware=hardware,publicHost=null,authUser=null,authPassword=null,relayMonitorPort=8081,fleetProvider=null,fleetRegistrar=null,fleetRouteChanger=null,fleetCommander=null,meterPollIntervalMs=30000,diagnosticCaptureMs=null,diagnosticLocalTimeoutMs=null,diagnosticReconnectWaitMs=90_000,diagnosticConfigurationTimeoutMs=10_000,diagnosticFtpUrlOverride=null,diagnosticFtpLister=null,diagnosticFtpSnapshotter=null}={}) {
   const engine = createEngine(); let state = engine.tick(); let diagnostic = null; let busy = false;
   const recoveryMonitor=createRecoveryMonitor({configured:false});
   let powerRecovery=null;
@@ -246,6 +246,18 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const primary=meterSlots.find(row=>row.slot===1)||meterSlots[0]||null,meterConfiguration=primary?.configuration||null,meterIdentity=primary?.identity||extractMeterIdentity(text,meterConfiguration?.raw),meterAssessment=primary?.assessment||assessMeterIdentity(text,meterConfiguration?.raw,analysis);
     return{chargerId,status:'Ontvangen',quickMode:ticket.quickMode===true,fastScan:ticket.fastScan===true,progress:{phase:'complete',label:ticket.quickMode?'Snelle diagnose gereed':'Diagnose gereed',percent:100},requestedAt:ticket.requestedAt,startTime:ticket.startTime||null,stopTime:ticket.stopTime||null,minutes:ticket.minutes??null,durationSeconds:ticket.durationSeconds??(ticket.minutes==null?null:ticket.minutes*60),source:ticket.source||'LaadFix',destination:ticket.destination||diagnosticDestination,locationHost:ticket.locationHost||diagnosticFtpHost||null,receivedAt:new Date().toISOString(),fileName:ticket.fileName||null,bytes:Buffer.byteLength(content),controllerStatus:item?.diagnosticsStatus||null,meterConfiguration,meterIdentity,meterAssessment,meterSlots,diagnosticSettings:diagnosticConfigurationSnapshot(configuration),diagnosticDebugPlan:{original:ticket.originalDebug||configurationMap.chg_Debug||null,temporary:ticket.maximumDebug||null},overview,cellular,analysis,excerpt};
   };
+  const readGrowingDiagnosticSnapshot=async(url,remote,knownSize,maxBytes)=>{
+    if(typeof diagnosticFtpSnapshotter==='function')return Buffer.from(await diagnosticFtpSnapshotter({remote,knownSize,maxBytes}));
+    const wanted=Math.max(0,Math.min(knownSize,maxBytes)),startAt=Math.max(0,knownSize-wanted),chunks=[];let bytes=0;
+    if(!wanted)return Buffer.alloc(0);
+    const previewClient=new FtpClient(8000),snapshotDone='LAADFIX_DIAGNOSTIC_SNAPSHOT_COMPLETE';
+    try{
+      await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
+      const sink=new Writable({write(chunk,encoding,callback){const remaining=wanted-bytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));bytes+=part.length;}callback(bytes>=wanted?Error(snapshotDone):null);}});
+      try{await previewClient.downloadTo(sink,remote,startAt);}catch(error){if(!String(error?.message||error).includes(snapshotDone))throw error;}
+      return Buffer.concat(chunks);
+    }finally{previewClient.close();}
+  };
   const scheduleFtpDiagnosticDownload=(chargerId,ticket)=>{
     const scheduleKey=`${chargerId}:${ticket.fileName}`;
     if(scheduledFtpFiles.has(scheduleKey))return;
@@ -267,6 +279,17 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         stable=entry.size===lastSize?stable+1:0;lastSize=entry.size;
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
+        let snapshotContent=null;
+        if(entry.size>=1024&&ticket.previewSourceSize!==entry.size){
+          try{
+            snapshotContent=await readGrowingDiagnosticSnapshot(url,remote,entry.size,captureLimitBytes);
+            if(snapshotContent.length){
+              const preview={...buildDiagnosticReport(chargerId,ticket,snapshotContent),status:'Live uitlezing',smartCapture:true,truncated:entry.size>snapshotContent.length,sourceUploadBytes:entry.size,bytes:snapshotContent.length,receivedAt:new Date().toISOString()};
+              ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
+              diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:!!ticket.fastScan,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens bijgewerkt',percent:Math.min(84,68+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
+            }
+          }catch{}
+        }
         if(ticket.fastScan&&entry.size>=1024&&(entry.size>=captureLimitBytes||ticket.finishRequested)){
           // A growing FTP file has no stable EOF. Stop the Ecotap writer first,
           // otherwise a preview can leave a hanging RETR session and the
@@ -277,13 +300,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!ticket.ftpAbortRequested)throw Error('Veilige stop wordt opnieuw geprobeerd');
           await new Promise(resolve=>setTimeout(resolve,400));
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
-          const previewClient=new FtpClient(8000),chunks=[];let previewBytes=0;
-          try{
-            await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
-            const sink=new Writable({write(chunk,encoding,callback){const remaining=captureLimitBytes-previewBytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));previewBytes+=part.length;}callback();}});
-            await previewClient.downloadTo(sink,remote,Math.max(0,entry.size-captureLimitBytes));
-          }finally{previewClient.close();}
-          const content=Buffer.concat(chunks),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
+          const content=snapshotContent?.length?snapshotContent:await readGrowingDiagnosticSnapshot(url,remote,entry.size,captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:true,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens beschikbaar',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
           if(entry.size>=captureLimitBytes||ticket.finishRequested){
