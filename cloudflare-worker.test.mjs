@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{OcppGateway,parseChargerId} from './cloudflare/worker.js';
+import worker,{OcppGateway,parseChargerId,GATEWAY_VERSION} from './cloudflare/worker.js';
 
 test('Cloudflare beantwoordt Ecotap tekst-keepalive direct aan de rand', () => {
   const previous=globalThis.WebSocketRequestResponsePair;
@@ -44,6 +44,18 @@ test('Cloudflare gateway heropent Render zonder op een nieuw laderbericht te wac
   await gateway.alarm();
   assert.equal(openedPath,'/ocpp/test/charger');
   assert.equal(gateway.activeCharger,charger);
+});
+
+test('Een nieuw geopende Homeboxsocket koppelt direct door zonder op heartbeat te wachten', async () => {
+  const alarms=[];let openedPath=null;
+  const charger={readyState:1};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{setAlarm:async value=>alarms.push(value),deleteAlarm:async()=>{}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.activeCharger=charger;
+  gateway.openBackend=async path=>{openedPath=path;gateway.backend={readyState:1};};
+  await gateway.prepareAcceptedCharger('/ocpp/test/RBC-1');
+  assert.equal(openedPath,'/ocpp/test/RBC-1');
+  assert.equal(alarms.length,1);
 });
 
 test('Cloudflare gateway plant na een mislukte herstelpoging snel een nieuwe poging', async () => {
@@ -93,7 +105,34 @@ test('Cloudflare wake activeert herstel voor een bewaarde Homeboxsocket', async 
   const status=await response.json();
   assert.equal(status.chargerConnected,true);
   assert.equal(status.backendConnected,false);
+  assert.equal(status.gatewayVersion,GATEWAY_VERSION);
+  assert.equal(status.socketCount,1);
   assert.equal(alarms.length,1);
+});
+
+test('Sluiten na hibernatie ruimt een verweesde Render-socket op', () => {
+  const closed=[];let alarmDeleted=false;
+  const charger={readyState:3,close:()=>{}};
+  const ctx={getWebSockets:()=>[charger],waitUntil:promise=>promise.catch(()=>{}),storage:{deleteAlarm:async()=>{alarmDeleted=true;}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.backend={readyState:1,close:(code,reason)=>closed.push({code,reason})};
+  gateway.webSocketClose(charger,1006,'Verbinding verdwenen');
+  assert.equal(closed.length,1);
+  assert.equal(closed[0].code,1012);
+  assert.equal(gateway.backend,null);
+  return new Promise(resolve=>setImmediate(()=>{assert.equal(alarmDeleted,true);resolve();}));
+});
+
+test('Sluiten van een oude dubbele socket bewaart de reagerende sessie', () => {
+  let backendClosed=false;
+  const old={readyState:3,close:()=>{}};
+  const current={readyState:1,deserializeAttachment:()=>({connectedAt:2})};
+  const ctx={getWebSockets:()=>[old,current],waitUntil:promise=>promise.catch(()=>{}),storage:{deleteAlarm:async()=>{}}};
+  const gateway=new OcppGateway(ctx);
+  gateway.backend={readyState:1,close:()=>{backendClosed=true;}};
+  gateway.webSocketClose(old,1006,'Oude sessie');
+  assert.equal(gateway.activeCharger,current);
+  assert.equal(backendClosed,false);
 });
 
 test('Cloudflare health kan ieder geregistreerd serienummer gericht wakker maken', async () => {

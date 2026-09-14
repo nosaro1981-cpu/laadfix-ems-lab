@@ -6,6 +6,7 @@ const BACKEND_STALE_MS = 150_000;
 const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
+export const GATEWAY_VERSION = '2026-09-14.2';
 
 export class OcppGateway {
   constructor(ctx) {
@@ -26,15 +27,46 @@ export class OcppGateway {
     this.backendRetryAttempt = 0;
   }
 
-  connectedCharger() {
-    if (this.activeCharger?.readyState === WebSocket.OPEN) return this.activeCharger;
-    this.activeCharger = this.ctx.getWebSockets('charger').find(socket => socket.readyState === WebSocket.OPEN) || null;
+  openChargers(exclude = null) {
+    return this.ctx.getWebSockets('charger').filter(socket => socket !== exclude && socket.readyState === WebSocket.OPEN);
+  }
+
+  connectedCharger(exclude = null) {
+    if (this.activeCharger !== exclude && this.activeCharger?.readyState === WebSocket.OPEN) return this.activeCharger;
+    this.activeCharger = this.openChargers(exclude).sort((left,right) =>
+      Number(right.deserializeAttachment?.()?.connectedAt || 0) - Number(left.deserializeAttachment?.()?.connectedAt || 0)
+    )[0] || null;
     return this.activeCharger;
+  }
+
+  releaseCharger(ws, code, reason) {
+    const replacement = this.connectedCharger(ws);
+    if (replacement) return false;
+    this.activeCharger = null;
+    const numericCode = Number(code);
+    const closeCode = numericCode >= 1000 && numericCode <= 4999 && ![1005,1006,1015].includes(numericCode) ? numericCode : 1012;
+    try { this.backend?.close(closeCode, reason || 'Laadstationverbinding verbroken'); } catch {}
+    this.backend = null;
+    this.backendOpenedAt = 0;
+    this.lastBackendMessageAt = 0;
+    this.queue = [];
+    this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
+    return true;
   }
 
   async scheduleBackendReconnect(delay = BACKEND_RETRY_MIN_MS) {
     if (!this.connectedCharger() || this.backend?.readyState === WebSocket.OPEN) return;
     await this.ctx.storage.setAlarm(Date.now() + Math.max(BACKEND_RETRY_MIN_MS, delay));
+  }
+
+  async prepareAcceptedCharger(path,current=null) {
+    await this.ctx.storage.setAlarm(Date.now()+BACKEND_WATCHDOG_MS);
+    if(current)return;
+    try{await this.openBackend(path);}
+    catch(error){
+      console.log(JSON.stringify({event:'backend_error',message:String(error?.message||error)}));
+      await this.scheduleBackendReconnect();
+    }
   }
 
   async backendHealthy() {
@@ -73,7 +105,8 @@ export class OcppGateway {
     if (new URL(request.url).pathname === '/_wake') {
       const charger = this.connectedCharger();
       if (charger) await this.scheduleBackendReconnect();
-      return Response.json({ok:true,chargerConnected:!!charger,backendConnected:this.backend?.readyState===WebSocket.OPEN});
+      const attachment=charger?.deserializeAttachment?.() || {};
+      return Response.json({ok:true,gatewayVersion:GATEWAY_VERSION,chargerConnected:!!charger,backendConnected:this.backend?.readyState===WebSocket.OPEN,socketCount:this.openChargers().length,connectedAt:attachment.connectedAt||null,lastMessageAt:attachment.lastMessageAt||null});
     }
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -84,6 +117,11 @@ export class OcppGateway {
     // backend leg is reopened independently when it becomes stale or closes.
     this.ctx.acceptWebSocket(charger, ['charger']);
     console.log(JSON.stringify({event:'charger_socket_accepted',path:url.pathname,existing:this.ctx.getWebSockets('charger').length}));
+    const current=this.connectedCharger(charger);
+    if(!current)this.activeCharger=charger;
+    // Connect the silent Homebox session to Render immediately and keep an
+    // alarm active. Recovery must not depend on a future heartbeat or message.
+    this.ctx.waitUntil(this.prepareAcceptedCharger(url.pathname+url.search,current));
     const requested = (request.headers.get('Sec-WebSocket-Protocol') || '')
       .split(',').map(value => value.trim()).filter(Boolean);
     const selected = requested.find(value => /^ocpp1\.6j?$/i.test(value));
@@ -204,19 +242,16 @@ export class OcppGateway {
     // newer compatibility dates and prevents an otherwise clean close being
     // reported to the other relay leg as code 1006 on older runtimes.
     try { ws.close(code, reason); } catch {}
-    if (ws === this.activeCharger) {
-      this.activeCharger = null;
-      const closeCode = Number(code) >= 1000 && Number(code) <= 4999 && ![1005,1006,1015].includes(Number(code)) ? Number(code) : 1012;
-      try { this.backend?.close(closeCode, reason || 'Laadstationverbinding verbroken'); } catch {}
-      this.backend = null;
-      this.queue = [];
-      this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
-    }
+    // After hibernation activeCharger starts as null. Always derive the truth
+    // from the accepted sockets so an orphaned Render connection cannot remain
+    // visible as a connected charger.
+    this.releaseCharger(ws,code,reason);
   }
 
   webSocketError(ws) {
     console.log(JSON.stringify({event:'charger_error',active:ws===this.activeCharger,remaining:this.ctx.getWebSockets('charger').length}));
-    if (ws === this.activeCharger) this.closeActive(1011, 'Laadstationfout');
+    try { ws.close(1011,'Laadstationfout'); } catch {}
+    this.releaseCharger(ws,1011,'Laadstationfout');
   }
 
   closeActive(code, reason) {
