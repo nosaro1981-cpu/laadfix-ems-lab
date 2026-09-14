@@ -667,6 +667,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           return send(200,{serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en FTP-upload worden parallel gevolgd','Een ontvangen bestand wordt ook zonder OCPP-antwoord verwerkt'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
         }
         const commands={
+          heartbeat:['TriggerMessage',{requestedMessage:'Heartbeat'}],
+          edgeReconnect:['edgeReconnect',{}],
           status:['TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}],
           meterValues:['TriggerMessage',{requestedMessage:'MeterValues',connectorId:1}],
           configuration:['GetConfiguration',{key:['HeartbeatInterval','ConnectionTimeOut','MeterValueSampleInterval','ClockAlignedDataInterval','SupportedFeatureProfiles']}],
@@ -682,7 +684,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           meterIdentification:['DataTransfer',{vendorId:'Ecotap',messageId:'GetMeterInfo',data:'{}'}]
         };
         if(!commands[action])throw Error('Onbekende remote actie');
-        if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart','backendReconnect'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
+        if(active&&['softReset','hardReset','unlock','operative','inoperative','clearCache','clearProfile','remoteStart','backendReconnect','edgeReconnect'].includes(action))throw Error('Actie geblokkeerd tijdens een actieve of startende laadsessie');
         if(action==='remoteStart'&&active)throw Error('Er loopt al een laadsessie');
         if(action==='remoteStop'&&!Number.isInteger(commands[action][1].transactionId))throw Error('Geen actief transactie-ID beschikbaar');
         busy=true;try{if(action==='diagnostics'&&!item.configuration?.some(row=>row.key==='chg_KWH1'))try{await fleetCommander(chargerId,'GetConfiguration',{key:['chg_KWH1']});}catch{}const [ocppAction,payload]=commands[action],beforeStatus=item.lastStatusNotification,beforeMeter=item.lastMeterValues,result=await fleetCommander(chargerId,ocppAction,payload);let update=null;

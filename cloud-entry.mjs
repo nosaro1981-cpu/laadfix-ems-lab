@@ -47,6 +47,11 @@ export async function startCloud({port=Number(process.env.PORT||process.env.APP_
   }
   async function fleetCommand(chargerId,action,payload,{timeoutMs}={}){
     if(!validId(chargerId))throw Error('Ongeldige OCPP-ID');
+    if(action==='edgeReconnect'){
+      const url=new URL('/control/reconnect',`http://${publicOcppHost}`);url.searchParams.set('station',chargerId);
+      const response=await fetch(url,{method:'POST',headers:{'X-LaadFix-Key':pathSecret},signal:AbortSignal.timeout(5000)});
+      const result=await response.json();if(!response.ok)throw Error(result.error||'Ladersessie kon niet worden vernieuwd');return result;
+    }
     const chargerRelay=await getRelay(chargerId);
     const response=await fetch(`http://127.0.0.1:${chargerRelay.monitorPort}/api/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload,timeoutMs})});
     const result=await response.json();if(!response.ok)throw Error(result.error||'OCPP-opdracht mislukt');return result.result;

@@ -1,4 +1,5 @@
 const OCPP_PATH_PREFIX = '/ocpp/lfx-ocpp-2026-RBC0000032-7Qm9Xp4Vt8Ks/';
+const CONTROL_KEY = OCPP_PATH_PREFIX.split('/')[2];
 const PRIMARY_CHARGER_ID = 'RBC-0000032';
 const PRIMARY_PATH = OCPP_PATH_PREFIX + PRIMARY_CHARGER_ID;
 const RENDER_ORIGIN = 'https://laadfix-ems-lab.onrender.com';
@@ -6,7 +7,7 @@ const BACKEND_RETRY_MIN_MS = 1_000;
 const BACKEND_RETRY_MAX_MS = 10_000;
 const BACKEND_WATCHDOG_MS = 30_000;
 const CHARGER_STALE_MS = 180_000;
-export const GATEWAY_VERSION = '2026-09-14.5';
+export const GATEWAY_VERSION = '2026-09-14.6';
 
 export class OcppGateway {
   constructor(ctx) {
@@ -89,7 +90,15 @@ export class OcppGateway {
   }
 
   async fetch(request) {
-    if (new URL(request.url).pathname === '/_wake') {
+    const internalPath = new URL(request.url).pathname;
+    if (internalPath === '/_reconnect') {
+      const charger = this.connectedCharger();
+      if (!charger) return Response.json({ok:false,status:'Offline'},{status:409});
+      charger.close(1012,'LaadFix vernieuwt de OCPP-sessie');
+      this.releaseCharger(charger,1012,'LaadFix vernieuwt de OCPP-sessie');
+      return Response.json({ok:true,status:'ReconnectRequested'});
+    }
+    if (internalPath === '/_wake') {
       const charger = this.connectedCharger();
       if (charger) await this.scheduleBackendReconnect();
       const attachment=charger?.deserializeAttachment?.() || {};
@@ -264,6 +273,13 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/control/reconnect' && request.method === 'POST') {
+      if (request.headers.get('X-LaadFix-Key') !== CONTROL_KEY) return new Response('Niet toegestaan',{status:403});
+      const requestedId = url.searchParams.get('station') || PRIMARY_CHARGER_ID;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(requestedId)) return Response.json({ok:false,error:'Ongeldig laadstation-ID'},{status:400});
+      const id = env.OCPP_GATEWAY.idFromName(OCPP_PATH_PREFIX + requestedId);
+      return env.OCPP_GATEWAY.get(id).fetch('https://ocpp-gateway.internal/_reconnect');
+    }
     if (url.pathname === '/health') {
       const requestedId = url.searchParams.get('station') || PRIMARY_CHARGER_ID;
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(requestedId)) {
