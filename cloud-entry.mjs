@@ -7,13 +7,13 @@ import {startEMS} from './ems-server.mjs';
 const listen=(server,port,host)=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve);});
 
 export function reconcileGatewayState(item,gateway,now=Date.now()){
-  if(!gateway?.ok||now-Number(gateway.checkedAt||0)>6000)return item;
+  if(!gateway?.ok||now-Number(gateway.checkedAt||0)>45000)return item;
   const chargerConnected=item.chargerConnected===true||gateway.chargerConnected===true;
   const backendConnected=chargerConnected&&(item.backendConnected===true||gateway.backendConnected===true);
   return {...item,chargerConnected,backendConnected,gatewayHealth:{verified:true,version:gateway.gatewayVersion||null,socketCount:Number(gateway.socketCount||0),checkedAt:new Date(gateway.checkedAt).toISOString(),connectedAt:gateway.connectedAt||null,lastMessageAt:gateway.lastMessageAt||null,disagreesWithLocal:item.chargerConnected===true&&gateway.chargerConnected!==true}};
 }
 
-export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,publicOcppHost=process.env.OCPP_PUBLIC_HOST||'ocpp.throbbing-limit-d29f.workers.dev',id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json',gatewayHealthProvider=null,gatewayHealthIntervalMs=1500}={}){
+export async function startCloud({port=Number(process.env.PORT||process.env.APP_PORT||process.env.NODE_PORT||(process.env.RENDER?10000:8080)),host=process.env.RENDER?'0.0.0.0':'127.0.0.1',publicHost=process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME,publicOcppHost=process.env.OCPP_PUBLIC_HOST||'ocpp.throbbing-limit-d29f.workers.dev',id=process.env.OCPP_ID||'RBC-0000032',pathSecret=process.env.OCPP_PATH_SECRET,upstream=process.env.OCPP_UPSTREAM||`ws://ocpp.robo-charge.net:80/${id}`,upstreamTemplate=process.env.OCPP_UPSTREAM_TEMPLATE||'ws://ocpp.robo-charge.net:80/#OSN#',authUser=process.env.DASHBOARD_USER,authPassword=process.env.DASHBOARD_PASSWORD,meterLogFile=process.env.METER_LOG_FILE||'data/meter-values.ndjson',routingFile=process.env.ROUTING_FILE||'data/proxy-routing.json',gatewayHealthProvider=null,gatewayHealthIntervalMs=15000}={}){
   if(!publicHost||!pathSecret||!authUser||!authPassword)throw Error('PUBLIC_HOST, OCPP_PATH_SECRET, DASHBOARD_USER en DASHBOARD_PASSWORD zijn verplicht');
   let relay=null,ems=null;
   const relays=new Map();

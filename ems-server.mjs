@@ -66,7 +66,7 @@ export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
 }
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
   const connection=item?.connectionDiagnostics,toTime=value=>typeof value==='number'?value:value?Date.parse(value):NaN,lastMessage=toTime(connection?.lastChargerMessageAt),lastPong=toTime(connection?.lastChargerPongAt),readinessKnown=!!connection&&('chargerTrafficSeen'in connection||'chargerTransportResponsive'in connection||'lastChargerMessageAt'in connection),recentMessage=Number.isFinite(lastMessage)&&now-lastMessage<=maxAgeMs,recentPong=connection?.chargerTransportResponsive===true&&Number.isFinite(lastPong)&&now-lastPong<=maxAgeMs;
-  return !!item?.chargerConnected&&(!readinessKnown||!item?.commandHealth?.degraded&&(item?.commandHealth?.status==='healthy'||recentMessage||recentPong));
+  return !!item?.chargerConnected&&(!readinessKnown||recentMessage||recentPong||!item?.commandHealth?.degraded&&item?.commandHealth?.status==='healthy');
 }
 const KNOWN_DIAGNOSTIC_CONFIGURATION={
   'RBC-0000033':[
@@ -600,7 +600,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
         let diagnosticToken=null,diagnosticLocation=null;
         if(action==='diagnostics'){
-          if(item.connectionDiagnostics&&!diagnosticStationResponsive(item))throw Error('De Homebox geeft al meer dan drie minuten geen OCPP-bericht. LaadFix vernieuwt eerst automatisch de vastgelopen verbinding.');
+          if(item.connectionDiagnostics&&!diagnosticStationResponsive(item))throw Error('De Homebox geeft al meer dan drie minuten geen OCPP-bericht. LaadFix laat de verbinding open en wacht op nieuwe activiteit.');
           const activeTicket=[...diagnosticTokens.values()].find(ticket=>ticket.chargerId===chargerId&&ticket.expiresAt>Date.now()),activeDiagnostic=diagnosticReports.get(chargerId),activePhase=activeDiagnostic?.progress?.phase;
           if(activeTicket&&activePhase&&!['complete','failed'].includes(activePhase))return send(409,{error:`Er loopt al een diagnose (${activeDiagnostic.progress.label||activePhase}). Wacht tot deze klaar is.`});
           if(!publicName&&!diagnosticFtpUrl)throw Error('Voor diagnose-upload is een eigen LaadFix-opslag nodig');

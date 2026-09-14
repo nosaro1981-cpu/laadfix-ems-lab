@@ -15,7 +15,7 @@ test('Een open lokale OCPP-socket blijft zonder tijdslimiet leidend',()=>{
 test('Verouderde gatewaystatus overschrijft de lokale status niet',()=>{
   const now=Date.now();
   const local={id:'RBC-0000033',chargerConnected:true,backendConnected:true};
-  assert.equal(reconcileGatewayState(local,{ok:true,chargerConnected:false,checkedAt:now-7000},now),local);
+  assert.equal(reconcileGatewayState(local,{ok:true,chargerConnected:false,checkedAt:now-46000},now),local);
 });
 
 test('Positieve gatewaystatus kan een nog niet bijgewerkte lokale status aanvullen',()=>{

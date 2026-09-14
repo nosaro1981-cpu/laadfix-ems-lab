@@ -96,6 +96,8 @@ test('Een recent OCPP-bericht of WebSocket-pong maakt diagnose beschikbaar',()=>
  item.connectionDiagnostics.lastChargerPongAt='2026-09-14T15:59:40Z';item.connectionDiagnostics.chargerTransportResponsive=true;
  assert.equal(diagnosticStationResponsive(item,now),true);
  item.commandHealth.degraded=true;
+ assert.equal(diagnosticStationResponsive(item,now),true);
+ item.connectionDiagnostics.lastChargerPongAt='2026-09-14T15:55:00Z';item.connectionDiagnostics.chargerTransportResponsive=false;
  assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
