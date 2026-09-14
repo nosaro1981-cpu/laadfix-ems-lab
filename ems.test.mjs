@@ -88,9 +88,9 @@ test('Nieuwe FTP-bytes worden tijdens een groeiende upload direct als live voorb
 });
 test('Een open ladersocket blijft beschikbaar na een eerdere opdracht-time-out',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');
- const item={chargerConnected:true,commandHealth:{degraded:true},connectionDiagnostics:{lastChargerMessageAt:'2026-09-14T15:55:00Z',lastChargerPongAt:null,chargerTransportResponsive:false}};
+ const item={chargerConnected:true,backendConnected:true,commandHealth:{degraded:true},connectionDiagnostics:{lastChargerMessageAt:'2026-09-14T15:55:00Z',lastChargerPongAt:null,chargerTransportResponsive:false}};
  assert.equal(diagnosticStationResponsive(item,now),true);
- item.chargerConnected=false;
+ item.backendConnected=false;
  assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
