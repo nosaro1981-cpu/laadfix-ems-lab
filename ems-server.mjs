@@ -11,7 +11,7 @@ import { Client as FtpClient } from 'basic-ftp';
 import { diagnosticLocation as diagnosticLocationForRequest, testDiagnosticFtp } from './diagnostic-ftp.mjs';
 import { createEngine, simulatedFleet } from './ems.mjs';
 import { createRecoveryMonitor } from './power-recovery.mjs';
-import { connectionIntelligence, analyzeControllerLog, assessMeterIdentity, extractCellularIdentity, extractMeterIdentity, extractMeterIdentities, extractDiagnosticOverview, normalizeControllerLog, readableControllerLog, diagnosticAnalysisWindow } from './connection-intelligence.mjs';
+import { connectionIntelligence, analyzeControllerLog, assessMeterIdentity, extractCellularIdentity, extractMeterIdentity, extractMeterIdentities, extractDiagnosticOverview, normalizeControllerLog, readableControllerLog, compactReadableControllerLog, diagnosticAnalysisWindow } from './connection-intelligence.mjs';
 import { auditStation } from './station-watchdog.mjs';
 import { createRecoveryCenter, recoveryGuard, connectorIds } from './recovery-center.mjs';
 import { createRecoveryCaseManager } from './recovery-case-manager.mjs';
@@ -263,7 +263,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     if(scheduledFtpFiles.has(scheduleKey))return;
     scheduledFtpFiles.add(scheduleKey);
     activeFtpTickets.set(chargerId,ticket);
-    let attempts=0,lastSize=null,stable=0;const captureLimitBytes=ticket.captureLimitBytes||diagnosticSmartCaptureBytes;
+    let attempts=0,lastSize=null,stable=0;const captureLimitBytes=ticket.captureLimitBytes||diagnosticSmartCaptureBytes,previewSourceLimit=Math.max(128*1024,captureLimitBytes*8);
     updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Online upload volgen',percent:65,estimatedCompleteAt:new Date(Date.now()+Math.min(60_000,ticket.transferEstimateMs||45_000)).toISOString()});
     const run=async()=>{
       attempts++;
@@ -282,7 +282,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         let snapshotContent=null;
         if(entry.size>=1024&&ticket.previewSourceSize!==entry.size){
           try{
-            snapshotContent=await readGrowingDiagnosticSnapshot(url,remote,entry.size,captureLimitBytes);
+            const snapshotSource=await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit);
+            snapshotContent=compactReadableControllerLog(snapshotSource,captureLimitBytes);
             if(snapshotContent.length){
               const preview={...buildDiagnosticReport(chargerId,ticket,snapshotContent),status:'Live uitlezing',smartCapture:true,truncated:entry.size>snapshotContent.length,sourceUploadBytes:entry.size,bytes:snapshotContent.length,receivedAt:new Date().toISOString()};
               ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
@@ -290,7 +291,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             }
           }catch{}
         }
-        if(ticket.fastScan&&entry.size>=1024&&(entry.size>=captureLimitBytes||ticket.finishRequested)){
+        if(ticket.fastScan&&entry.size>=1024&&(snapshotContent?.length>=Math.floor(captureLimitBytes*.9)||ticket.finishRequested)){
           // A growing FTP file has no stable EOF. Stop the Ecotap writer first,
           // otherwise a preview can leave a hanging RETR session and the
           // upload keeps growing beyond the configured compact limit.
@@ -300,7 +301,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!ticket.ftpAbortRequested)throw Error('Veilige stop wordt opnieuw geprobeerd');
           await new Promise(resolve=>setTimeout(resolve,400));
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
-          const content=snapshotContent?.length?snapshotContent:await readGrowingDiagnosticSnapshot(url,remote,entry.size,captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:true,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
+          const content=snapshotContent?.length?snapshotContent:compactReadableControllerLog(await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit),captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:entry.size>content.length,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),chargerId,requestedAt:ticket.requestedAt,startTime:ticket.startTime,stopTime:ticket.stopTime,durationSeconds:ticket.durationSeconds,minutes:ticket.minutes,source:ticket.source,destination:ticket.destination,locationHost:ticket.locationHost,fastScan:true,status:'Live gegevens beschikbaar',smartCapture:true,livePreview:preview,progress:{phase:'uploading',label:'Live gegevens beschikbaar',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs).toISOString()}});
           if(entry.size>=captureLimitBytes||ticket.finishRequested){

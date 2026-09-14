@@ -89,6 +89,18 @@ export function readableControllerLog(value){
     .replace(/\n{3,}/g,'\n\n');
 }
 
+export function compactReadableControllerLog(value,maxBytes=20*1024){
+  const text=readableControllerLog(value).replace(/^\[Binair meterblok verborgen[^\n]*\]\s*$/gmi,'').replace(/\n{3,}/g,'\n\n').trim();
+  if(!text)return Buffer.alloc(0);
+  const buffer=Buffer.from(text+'\n','utf8');
+  if(buffer.length<=maxBytes)return buffer;
+  const marker=Buffer.from('\n[...midden ingekort; originele controllerregels vóór en na dit punt...]\n','utf8'),contentBudget=Math.max(0,maxBytes-marker.length),headBudget=Math.floor(contentBudget/2),tailBudget=contentBudget-headBudget;
+  let head=buffer.subarray(0,headBudget),tail=buffer.subarray(buffer.length-tailBudget),headEnd=head.lastIndexOf(10),tailStart=tail.indexOf(10);
+  if(headEnd>=0)head=head.subarray(0,headEnd+1);
+  if(tailStart>=0)tail=tail.subarray(tailStart+1);
+  return Buffer.concat([head,marker,tail]);
+}
+
 export function extractControllerHealth(value){
   const text=normalizeControllerLog(value),numbers=pattern=>[...text.matchAll(pattern)].map(match=>Number(match[1])).filter(Number.isFinite),pair=pattern=>[...text.matchAll(pattern)].map(match=>[Number(match[1]),Number(match[2])]).filter(row=>row.every(Number.isFinite)).at(-1)||null;
   const ram=pair(/RAM SIZE\/CEILING:\s*(\d+)\s*KB\s*\/\s*(\d+)/gi),flash=pair(/FLASH SIZE\/CEILING:\s*(\d+)\s*KB\s*\/\s*(\d+)/gi),heapSamples=numbers(/IP free Heap\s*:\s*([\d.]+)\s*k/gi),stackGaps=numbers(/Stack size[^\r\n]*?Gap:\s*([\d.]+)\s*kb/gi),event=[...text.matchAll(/EVENT FLASH MANAGER START\s*\[WRID:(\d+)\]\[(\d+)\/(\d+)\]MEM USAGE\[(\d+)\]/gi)].at(-1)||null;

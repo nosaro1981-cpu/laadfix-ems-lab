@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeControllerLog,assessMeterIdentity,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,extractMeterIdentities,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
+import {analyzeControllerLog,assessMeterIdentity,compactReadableControllerLog,diagnosticAnalysisWindow,extractCellularIdentity,extractControllerHealth,extractDiagnosticOverview,extractMeterIdentity,extractMeterIdentities,normalizeControllerLog,readableControllerLog} from './connection-intelligence.mjs';
 
 test('Controllerlog leest SIM- en modemidentiteit uit Ecotap-opstartregels',()=>{
  const result=extractCellularIdentity('GSM Modem: BG95-M3\nGSM IMEI[111111111111111]\nGSM IMSI: 222222222222222\nGSM CCID[33333333333333333333]\nGSM REG:5, SQ:23,');
@@ -94,6 +94,21 @@ test('Leesbare logweergave verbergt binaire diagnoseblokken',()=>{
  assert.match(readable,/Binair meterblok verborgen · 6 onleesbare tekens/);
  assert.match(readable,/KWH:AD\[1\]RG\[48\]R\[1\]OK/);
  assert.doesNotMatch(readable,/\uFFFD/);
+});
+
+test('Compacte diagnose telt alleen originele controllerregels mee',()=>{
+ const original='18:02:55:Model Name [DUO2]\n18:02:55:Meter0:SN[21280066]Type[23]Speed[9600]Addr[1]Opt[0]\n18:03:01:KWH METER [CH][SERIAL][TYPE]:[0][21280066][Eastron SDM72D]\n';
+ const compact=compactReadableControllerLog(Buffer.concat([Buffer.alloc(24*1024,0xff),Buffer.from(original)]),20*1024).toString('utf8');
+ assert.equal(compact,original);
+ assert.doesNotMatch(compact,/Binair meterblok/);
+});
+
+test('Compacte diagnose bewaart begin en einde van een lange controllerlog',()=>{
+ const lines=['00:00:03:===== BOOTLOADER INFO =====',...Array.from({length:900},(_,index)=>`18:03:${String(index%60).padStart(2,'0')}:KWH:AD[1]RG[48]R[1]OK`),'18:03:59:CAN RX FRAMES[42]'];
+ const compact=compactReadableControllerLog(lines.join('\n'),20*1024).toString('utf8');
+ assert.match(compact,/BOOTLOADER INFO/);
+ assert.match(compact,/CAN RX FRAMES\[42\]/);
+ assert.ok(Buffer.byteLength(compact)<=20*1024);
 });
 
 test('Controllergeheugen toont vrije RAM, flash, heap en eventopslag',()=>{
