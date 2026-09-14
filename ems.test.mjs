@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,diagnosticCaptureShouldStop,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,diagnosticCaptureShouldStop,diagnosticFtpSnapshotSafe,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -68,6 +68,12 @@ test('Snelle diagnose stopt op bestandsgrootte als een open FTP-bestand nog niet
  assert.equal(diagnosticCaptureShouldStop(20*1024,0,20*1024),true);
  assert.equal(diagnosticCaptureShouldStop(19*1024,0,20*1024),false);
  assert.equal(diagnosticCaptureShouldStop(2*1024,0,20*1024,true),true);
+});
+test('Een FTP-momentopname wordt pas gelezen nadat de upload stabiel is',()=>{
+ assert.equal(diagnosticFtpSnapshotSafe(20*1024,null,0),false);
+ assert.equal(diagnosticFtpSnapshotSafe(20*1024,10*1024,0),false);
+ assert.equal(diagnosticFtpSnapshotSafe(20*1024,20*1024,1),false);
+ assert.equal(diagnosticFtpSnapshotSafe(20*1024,20*1024,2),true);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{
  const confirmed={receivedAt:'2026-09-13T01:23:14Z',fileName:'confirmed.xls',meterIdentity:{model:'SDM72D',serial:'21280066',address:'1',baudrate:'9600',confidence:'strong'}};

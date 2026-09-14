@@ -58,6 +58,9 @@ export function diagnosticSnapshotIsComplete(bytes,wanted){
 export function diagnosticCaptureShouldStop(entrySize,snapshotBytes,captureLimitBytes,finishRequested=false){
   return Number(entrySize)>=1024&&(finishRequested||Number(entrySize)>=Number(captureLimitBytes)||Number(snapshotBytes)>=Math.floor(Number(captureLimitBytes)*.9));
 }
+export function diagnosticFtpSnapshotSafe(entrySize,previousSize,stablePolls){
+  return Number(entrySize)>=1024&&previousSize!==null&&Number(entrySize)===Number(previousSize)&&Number(stablePolls)>=2;
+}
 export function confirmedMeterIdentityFor(report,history=[]){
   const current=report?.meterIdentity;
   if(current?.model&&current?.confidence==='strong')return{model:current.model,serial:current.serial||null,address:current.address||null,baudrate:current.baudrate||null,confirmedAt:report.receivedAt||report.requestedAt||new Date().toISOString(),sourceFile:report.fileName||null,confidence:'strong'};
@@ -291,7 +294,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
         let snapshotContent=null;
-        if(entry.size>=1024&&ticket.previewSourceSize!==entry.size){
+        // Reading an Ecotap upload through FTP while its STOR session is still
+        // open can make vsftpd abort the writer. Wait for two unchanged polls.
+        const snapshotSafe=diagnosticFtpSnapshotSafe(entry.size,previousSize,stable);
+        if(snapshotSafe&&ticket.previewSourceSize!==entry.size){
           try{
             const snapshotSource=await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit);
             snapshotContent=compactReadableControllerLog(snapshotSource,captureLimitBytes);
@@ -302,15 +308,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             }
           }catch{}
         }
-        if(ticket.fastScan&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
-          // A growing FTP file has no stable EOF. Stop the Ecotap writer first,
-          // otherwise a preview can leave a hanging RETR session and the
-          // upload keeps growing beyond the configured compact limit.
+        if(ticket.fastScan&&snapshotSafe&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
           ticket.finishRequested=true;
-          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · overdracht afsluiten',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+5000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
-          try{ticket.ftpAbortRequested=await requestFtpAbort(ticket);}catch{ticket.ftpAbortRequested=false;}
-          if(!ticket.ftpAbortRequested)throw Error('Veilige stop wordt opnieuw geprobeerd');
-          await new Promise(resolve=>setTimeout(resolve,400));
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Upload gereed · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
           const content=snapshotContent?.length?snapshotContent:compactReadableControllerLog(await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit),captureLimitBytes),preview={...buildDiagnosticReport(chargerId,ticket,content),status:'Live uitlezing',smartCapture:true,truncated:entry.size>content.length,sourceUploadBytes:entry.size,bytes:content.length,receivedAt:new Date().toISOString()};
           ticket.previewSourceSize=entry.size;ticket.livePreview=preview;
@@ -601,6 +601,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!originalDebug)configurationWarning=(configurationWarning?configurationWarning+' ':'')+'De proxy wijzigt daarom geen debuginstellingen en vraagt veilig een standaardlog op.';
           ticket.configurationWarning=configurationWarning;
           ticket.configuration=rows.map(row=>({key:row.key,value:row.value,readonly:!!row.readonly}));ticket.meterSettings=rows.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
+          const configurationPreview={...buildDiagnosticReport(chargerId,ticket,Buffer.from('00:00:00:Actuele configuratie ontvangen\n')),status:'Live uitlezing',liveStage:'configuration',bytes:0,receivedAt:new Date().toISOString()};
+          ticket.livePreview=configurationPreview;
+          diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),livePreview:configurationPreview});
           const selectedDebugModules=Array.isArray(body.debugModules)?body.debugModules:[];ticket.debugModules=selectedDebugModules;
           if(originalDebug){
             updateDiagnosticProgress(chargerId,ticket,{phase:'debugging',label:'Gekozen debugmodules verhogen',percent:18,estimatedCompleteAt:new Date(Date.now()+(ticket.durationSeconds||300)*1000+120_000).toISOString()},{status:'Gekozen debug tijdelijk verhogen'});
