@@ -61,6 +61,10 @@ export function diagnosticCaptureShouldStop(entrySize,snapshotBytes,captureLimit
 export function diagnosticFtpSnapshotSafe(entrySize,previousSize,stablePolls){
   return Number(entrySize)>=1024&&previousSize!==null&&Number(entrySize)===Number(previousSize)&&Number(stablePolls)>=2;
 }
+export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
+  const raw=item?.connectionDiagnostics?.lastChargerMessageAt,last=raw?Date.parse(raw):NaN;
+  return !!item?.chargerConnected&&!item?.commandHealth?.degraded&&(!raw||Number.isFinite(last)&&now-last<=maxAgeMs);
+}
 export function confirmedMeterIdentityFor(report,history=[]){
   const current=report?.meterIdentity;
   if(current?.model&&current?.confidence==='strong')return{model:current.model,serial:current.serial||null,address:current.address||null,baudrate:current.baudrate||null,confirmedAt:report.receivedAt||report.requestedAt||new Date().toISOString(),sourceFile:report.fileName||null,confidence:'strong'};
@@ -561,6 +565,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
         let diagnosticToken=null,diagnosticLocation=null;
         if(action==='diagnostics'){
+          if(item.connectionDiagnostics&&!diagnosticStationResponsive(item))throw Error('De Homebox geeft al meer dan drie minuten geen OCPP-bericht. LaadFix vernieuwt eerst automatisch de vastgelopen verbinding.');
           const activeTicket=[...diagnosticTokens.values()].find(ticket=>ticket.chargerId===chargerId&&ticket.expiresAt>Date.now()),activeDiagnostic=diagnosticReports.get(chargerId),activePhase=activeDiagnostic?.progress?.phase;
           if(activeTicket&&activePhase&&!['complete','failed'].includes(activePhase))return send(409,{error:`Er loopt al een diagnose (${activeDiagnostic.progress.label||activePhase}). Wacht tot deze klaar is.`});
           if(!publicName&&!diagnosticFtpUrl)throw Error('Voor diagnose-upload is een eigen LaadFix-opslag nodig');
@@ -600,7 +605,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(!originalDebug&&!configurationWarning)try{read=await fleetCommander(chargerId,'GetConfiguration',{key:['chg_Debug']},{timeoutMs:configurationTimeout});const targetedRows=read?.configurationKey||read?.result?.configurationKey||[];rows=targetedRows.length?targetedRows:rows;originalDebug=targetedRows.find(row=>row.key==='chg_Debug')?.value;}catch(error){configurationWarning=`Debuginstelling antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden.`;}
           if(!originalDebug)configurationWarning=(configurationWarning?configurationWarning+' ':'')+'De proxy wijzigt daarom geen debuginstellingen en vraagt veilig een standaardlog op.';
           ticket.configurationWarning=configurationWarning;
-          ticket.configuration=rows.map(row=>({key:row.key,value:row.value,readonly:!!row.readonly}));ticket.meterSettings=rows.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
+          const combinedConfiguration=new Map([...cachedRows,...rows].map(row=>[String(row.key||''),{key:row.key,value:row.value,readonly:!!row.readonly}]));ticket.configuration=[...combinedConfiguration.values()];ticket.meterSettings=ticket.configuration.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));ticket.freshStart=ticket.freshStart===true;
           const configurationPreview={...buildDiagnosticReport(chargerId,ticket,Buffer.from('00:00:00:Actuele configuratie ontvangen\n')),status:'Live uitlezing',liveStage:'configuration',bytes:0,receivedAt:new Date().toISOString()};
           ticket.livePreview=configurationPreview;
           diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),livePreview:configurationPreview});
