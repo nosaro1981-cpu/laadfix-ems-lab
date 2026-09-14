@@ -346,20 +346,24 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const scheduleLocalDiagnosticTimeout=ticket=>{setTimeout(()=>{const current=diagnosticReports.get(ticket.chargerId),phase=current?.progress?.phase;if(['complete','failed'].includes(phase)||!diagnosticTokens.has(ticket.token))return;void failDiagnosticTicket(ticket,'Geen diagnosebestand ontvangen via de laptop binnen de veilige wachttijd. Controleer de lokale ontvanger en firewall.','Lokale upload gestopt');},localUploadTimeoutMs).unref();};
   const requestAndTrackDiagnosticFile=async(ticket,location)=>{
     const baseline=await snapshotDiagnosticFtp(ticket.chargerId),payload={location,retries:2,retryInterval:60,startTime:ticket.startTime,stopTime:ticket.stopTime};
-    const commandOutcome=fleetCommander(ticket.chargerId,'GetDiagnostics',payload).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
+    const sendCommand=()=>fleetCommander(ticket.chargerId,'GetDiagnostics',payload,{timeoutMs:30_000}).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
+    let commandOutcome=sendCommand(),lastCommand=null;
     const ftpOutcome=diagnosticFtpUrl&&!ticket.localReceiver?waitForNewDiagnosticFtpFile(ticket,baseline).then(entry=>({kind:'ftp',entry})):null;
     updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Homebox en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
-    let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome,result=null;
-    if(outcome.kind==='response'){result=outcome.result;ticket.fileName=result?.fileName||null;}
-    else if(outcome.kind==='ftp'&&outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
-    if(!ticket.fileName&&ftpOutcome){
-      if(outcome.kind==='error')updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:60,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
-      const ftpResult=outcome.kind==='ftp'?outcome:await ftpOutcome;
-      if(ftpResult?.entry){ticket.fileName=ftpResult.entry.name;ticket.fileDiscoveredWithoutResponse=true;}
+    const applyOutcome=outcome=>{if(outcome?.kind==='response'){lastCommand=outcome;ticket.fileName=outcome.result?.fileName||null;}else if(outcome?.kind==='error')lastCommand=outcome;else if(outcome?.kind==='ftp'&&outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;}};
+    let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome;applyOutcome(outcome);
+    if(!ticket.fileName&&outcome.kind==='error'){
+      updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Homebox antwoordt niet · opdracht eenmaal opnieuw verstuurd',percent:60,estimatedCompleteAt:new Date(Date.now()+90_000).toISOString()},{status:'OCPP-opdracht veilig opnieuw proberen · FTP blijft gevolgd',error:null});
+      commandOutcome=sendCommand();outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome;applyOutcome(outcome);
     }
-    if(!ticket.fileName){const command=await commandOutcome;throw Error(command.kind==='error'?`${command.error.message}. Er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');}
+    if(!ticket.fileName&&ftpOutcome){
+      if(outcome.kind==='error')updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:61,estimatedCompleteAt:new Date(Date.now()+60_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
+      const ftpResult=outcome.kind==='ftp'?outcome:await ftpOutcome;
+      applyOutcome(ftpResult);
+    }
+    if(!ticket.fileName){const command=lastCommand||await commandOutcome;throw Error(command.kind==='error'?`${command.error.message}. De opdracht is eenmaal opnieuw verstuurd; er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');}
     if(diagnosticFtpUrl&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(ticket.chargerId,ticket);else if(ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);
-    return result;
+    return lastCommand?.result||null;
   };
   const pythonExe='C:\\Users\\melgh\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe';
   const friendlyLedError=value=>{

@@ -199,7 +199,7 @@ test('Ontbrekend GetDiagnostics-antwoord gaat door zodra het nieuwe FTP-bestand 
   const response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'FTP-FALLBACK',action:'diagnostics',durationSeconds:10,fastScan:true,debugModules:['modbus']})});
   assert.equal(response.status,202);
   let report;for(let i=0;i<40;i++){await new Promise(resolve=>setTimeout(resolve,10));report=(await(await fetch(base+'/api/state',{headers:{Authorization:authorization}})).json()).diagnostics['FTP-FALLBACK'];if(report?.fileName)break;}
-  assert.equal(report.fileName,'FTP-FALLBACKDiag1.xls');assert.equal(report.fileDiscoveredWithoutResponse,true);assert.equal(report.progress.phase,'uploading');assert.equal(report.error,null);assert.equal(calls.filter(action=>action==='GetDiagnostics').length,1);
+  assert.equal(report.fileName,'FTP-FALLBACKDiag1.xls');assert.equal(report.fileDiscoveredWithoutResponse,true);assert.equal(report.progress.phase,'uploading');assert.equal(report.error,null);assert.equal(calls.filter(action=>action==='GetDiagnostics').length,2);
  }finally{if(app)await app.close();}
 });
 
