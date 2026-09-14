@@ -65,7 +65,7 @@ export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
   return Number(entrySize)>=1024&&Number(entrySize)!==Number(previewSourceSize||0);
 }
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
-  return !!item?.chargerConnected&&!!item?.backendConnected;
+  return !!item?.chargerConnected&&!!item?.backendConnected&&item?.commandRouteReady!==false;
 }
 const KNOWN_DIAGNOSTIC_CONFIGURATION={
   'RBC-0000033':[

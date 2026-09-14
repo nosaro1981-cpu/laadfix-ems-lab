@@ -86,11 +86,11 @@ test('Nieuwe FTP-bytes worden tijdens een groeiende upload direct als live voorb
  assert.equal(diagnosticLivePreviewShouldRead(2*1024,2*1024),false);
  assert.equal(diagnosticLivePreviewShouldRead(3*1024,2*1024),true);
 });
-test('Een open ladersocket blijft beschikbaar na een eerdere opdracht-time-out',()=>{
+test('Alleen een volledige lokale commandoroute blijft beschikbaar na een eerdere opdracht-time-out',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');
- const item={chargerConnected:true,backendConnected:true,commandHealth:{degraded:true},connectionDiagnostics:{lastChargerMessageAt:'2026-09-14T15:55:00Z',lastChargerPongAt:null,chargerTransportResponsive:false}};
+ const item={chargerConnected:true,backendConnected:true,commandRouteReady:true,commandHealth:{degraded:true},connectionDiagnostics:{lastChargerMessageAt:'2026-09-14T15:55:00Z',lastChargerPongAt:null,chargerTransportResponsive:false}};
  assert.equal(diagnosticStationResponsive(item,now),true);
- item.backendConnected=false;
+ item.commandRouteReady=false;
  assert.equal(diagnosticStationResponsive(item,now),false);
 });
 test('Sterk bevestigde meteridentiteit blijft beschikbaar voor volgende logs',()=>{

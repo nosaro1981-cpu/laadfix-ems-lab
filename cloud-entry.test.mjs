@@ -7,6 +7,7 @@ test('Een open lokale OCPP-socket blijft zonder tijdslimiet leidend',()=>{
   const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:true,backendConnected:true,lastSeen:new Date(now-600000).toISOString()},{ok:true,chargerConnected:false,backendConnected:false,socketCount:0,gatewayVersion:'2026-09-14.3',checkedAt:now},now);
   assert.equal(state.chargerConnected,true);
   assert.equal(state.backendConnected,true);
+  assert.equal(state.commandRouteReady,true);
   assert.equal(state.gatewayHealth.verified,true);
   assert.equal(state.gatewayHealth.socketCount,0);
   assert.equal(state.gatewayHealth.disagreesWithLocal,true);
@@ -23,5 +24,6 @@ test('Positieve gatewaystatus kan een nog niet bijgewerkte lokale status aanvull
   const state=reconcileGatewayState({id:'RBC-0000033',chargerConnected:false,backendConnected:false},{ok:true,chargerConnected:true,backendConnected:true,socketCount:1,checkedAt:now},now);
   assert.equal(state.chargerConnected,true);
   assert.equal(state.backendConnected,true);
+  assert.equal(state.commandRouteReady,false);
   assert.equal(state.gatewayHealth.disagreesWithLocal,false);
 });

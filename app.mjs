@@ -74,7 +74,7 @@ const trafficThresholdMs=item=>{const heartbeat=Number(configValue(item,'Heartbe
 const chargerTrafficFresh=item=>directionalAgeMs(item,'charger')<=trafficThresholdMs(item);
 const backendTrafficFresh=item=>directionalAgeMs(item,'backend')<=trafficThresholdMs(item);
 const endpointRisk=item=>{const endpoint=configValue(item,'com_Endpoint');return !!item.chargerConnected&&!!endpoint&&/(?:^|\/\/)ocpp\.robo-charge\.net(?::|\/|$)/i.test(endpoint);};
-const routeConnected=item=>!!item.chargerConnected&&!!item.backendConnected;
+const routeConnected=item=>item.commandRouteReady??(!!item.chargerConnected&&!!item.backendConnected);
 const ocppOnline=item=>routeConnected(item);
 const connectionStatusClass=item=>endpointRisk(item)||routeConnected(item)&&!ocppOnline(item)?'warning':ocppOnline(item)?'ok':item.chargerConnected?'warning':'bad';
 const chargerConnectionLabel=item=>!item.chargerConnected?'Lader → proxy verbroken':endpointRisk(item)?'Lader → proxy verbonden · opgeslagen endpoint wijkt af':commandDegraded(item)?'Lader → proxy verbonden · vorige opdracht zonder antwoord':item.connectionDiagnostics?.chargerTrafficSeen?'Lader → proxy verbonden · laatste bericht '+age(directionalTime(item,'charger')):'Lader → proxy verbonden';
