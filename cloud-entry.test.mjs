@@ -24,7 +24,12 @@ test('Een vastgelopen lokale commandoroute wordt pas na nieuw laderverkeer vrijg
 test('Verouderde gatewaystatus overschrijft de lokale status niet',()=>{
   const now=Date.now();
   const local={id:'RBC-0000033',chargerConnected:true,backendConnected:true};
-  assert.equal(reconcileGatewayState(local,{ok:true,chargerConnected:false,checkedAt:now-46000},now),local);
+  assert.deepEqual(reconcileGatewayState(local,{ok:true,chargerConnected:false,checkedAt:now-46000},now),{...local,commandRouteReady:false});
+});
+
+test('Ontbrekende gatewaystatus maakt een stille lokale socket niet diagnosegereed',()=>{
+  const local={id:'RBC-0000033',chargerConnected:true,backendConnected:true,connectionDiagnostics:{chargerTrafficSeen:false,lastChargerMessageAt:null}};
+  assert.equal(reconcileGatewayState(local,null).commandRouteReady,false);
 });
 
 test('Positieve gatewaystatus kan een nog niet bijgewerkte lokale status aanvullen',()=>{
