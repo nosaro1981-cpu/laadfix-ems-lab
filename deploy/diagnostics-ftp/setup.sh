@@ -13,12 +13,12 @@ DIAG_FTP_USER="${DIAG_FTP_USER:-diagnostics}"
 FTP_PORT="${FTP_PORT:-2121}"
 PASV_MIN_PORT="${PASV_MIN_PORT:-30000}"
 PASV_MAX_PORT="${PASV_MAX_PORT:-30009}"
-DIAG_FTP_MAX_RATE="${DIAG_FTP_MAX_RATE:-32768}"
+DIAG_FTP_MAX_RATE="${DIAG_FTP_MAX_RATE:-1024}"
 FTP_ROOT="/srv/laadfix-diagnostics"
 
 [[ "$DIAG_FTP_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || { echo "Ongeldige gebruikersnaam" >&2; exit 1; }
 [[ "$FTP_PORT" =~ ^[0-9]+$ && "$PASV_MIN_PORT" =~ ^[0-9]+$ && "$PASV_MAX_PORT" =~ ^[0-9]+$ ]] || { echo "Ongeldige poort" >&2; exit 1; }
-[[ "$DIAG_FTP_MAX_RATE" =~ ^[0-9]+$ && "$DIAG_FTP_MAX_RATE" -ge 8192 ]] || { echo "Ongeldige FTP-snelheidsgrens" >&2; exit 1; }
+[[ "$DIAG_FTP_MAX_RATE" =~ ^[0-9]+$ && "$DIAG_FTP_MAX_RATE" -ge 1024 ]] || { echo "Ongeldige FTP-snelheidsgrens" >&2; exit 1; }
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd ufw

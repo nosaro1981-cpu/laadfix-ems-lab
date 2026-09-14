@@ -10,7 +10,7 @@ Voer op de VPS uit:
 export PUBLIC_IP="<publiek-ip>"
 export DIAG_FTP_USER="diagnostics"
 export DIAG_FTP_PASSWORD="<sterk-wachtwoord>"
-export DIAG_FTP_MAX_RATE="32768"
+export DIAG_FTP_MAX_RATE="1024"
 sudo -E bash setup.sh
 ```
 
