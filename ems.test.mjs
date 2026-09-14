@@ -53,6 +53,11 @@ test('Startvertraging, onmiddellijke stop en veilige fasewisseling in simulatie'
  e.set({...structuredClone(defaults),mode:'fast'});assert.equal(e.tick(7000).result.actualA,0);assert.equal(e.tick(12000).result.actualA,16);
  e.set({...structuredClone(defaults),mode:'fast',phases:1});assert.equal(e.tick(13000).result.actualA,0);
 });
+test('Alleen CAN op maximaal zet iedere andere debugmodule op nul',()=>{
+ const value=selectDiagnosticDebug(['canbus']);
+ assert.match(value,/(?:^|,)canbus=3(?:,|$)/);
+ for(const part of value.split(',')){const[key,level]=part.split('=');if(key!=='canbus')assert.equal(level,'0',key+' moet uit staan');}
+});
 test('Diagnoseduur rekent seconden exact om naar milliseconden',()=>{
  assert.equal(diagnosticCaptureDurationMs({durationSeconds:10,fastScan:true}),10_000);
  assert.equal(diagnosticCaptureDurationMs({durationSeconds:30}),30_000);
