@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {defaults,calculate,validate,createEngine,simulatedFleet} from './ems.mjs';
 import {assessMeterIdentity} from './connection-intelligence.mjs';
-import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,diagnosticCaptureShouldStop,diagnosticFtpSnapshotSafe,diagnosticStationResponsive,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
+import {startEMS,privateIPv4,colourForStatus,assessService,extractMeterReadings,maximizeDiagnosticDebug,selectDiagnosticDebug,enhanceSelectedDiagnosticDebug,diagnosticConfigurationSnapshot,diagnosticTextWithSettings,diagnosticCaptureDurationMs,diagnosticSnapshotIsComplete,diagnosticCaptureShouldStop,diagnosticFtpSnapshotSafe,diagnosticLivePreviewShouldRead,diagnosticStationResponsive,confirmedMeterIdentityFor,downloadableDiagnosticText,diagnosticTextFileName,DIAGNOSTIC_DEBUG_BASE,mergePrimaryFleetState} from './ems-server.mjs';
 import {recoveryDecision,createRecoveryMonitor} from './power-recovery.mjs';
 test('Laadpaalstatus kiest de juiste lampkleur',()=>{
  assert.equal(colourForStatus('Available'), 'green');
@@ -74,6 +74,12 @@ test('Een FTP-momentopname wordt pas gelezen nadat de upload stabiel is',()=>{
  assert.equal(diagnosticFtpSnapshotSafe(20*1024,10*1024,0),false);
  assert.equal(diagnosticFtpSnapshotSafe(20*1024,20*1024,1),false);
  assert.equal(diagnosticFtpSnapshotSafe(20*1024,20*1024,2),true);
+});
+test('Nieuwe FTP-bytes worden tijdens een groeiende upload direct als live voorbeeld gelezen',()=>{
+ assert.equal(diagnosticLivePreviewShouldRead(512,0),false);
+ assert.equal(diagnosticLivePreviewShouldRead(2*1024,0),true);
+ assert.equal(diagnosticLivePreviewShouldRead(2*1024,2*1024),false);
+ assert.equal(diagnosticLivePreviewShouldRead(3*1024,2*1024),true);
 });
 test('Een verse keepalive bij de randproxy houdt diagnose beschikbaar na een serverherstart',()=>{
  const now=Date.parse('2026-09-14T16:00:00Z');

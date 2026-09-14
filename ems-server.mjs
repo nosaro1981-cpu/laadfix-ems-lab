@@ -61,6 +61,9 @@ export function diagnosticCaptureShouldStop(entrySize,snapshotBytes,captureLimit
 export function diagnosticFtpSnapshotSafe(entrySize,previousSize,stablePolls){
   return Number(entrySize)>=1024&&previousSize!==null&&Number(entrySize)===Number(previousSize)&&Number(stablePolls)>=2;
 }
+export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
+  return Number(entrySize)>=1024&&Number(entrySize)!==Number(previewSourceSize||0);
+}
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
   const raw=item?.connectionDiagnostics?.lastChargerMessageAt||item?.gatewayHealth?.lastMessageAt,last=typeof raw==='number'?raw:raw?Date.parse(raw):NaN;
   return !!item?.chargerConnected&&!item?.commandHealth?.degraded&&(!raw||Number.isFinite(last)&&now-last<=maxAgeMs);
@@ -313,7 +316,10 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           }
         }
         const snapshotSafe=diagnosticFtpSnapshotSafe(entry.size,previousSize,stable);
-        if(snapshotSafe&&ticket.previewSourceSize!==entry.size){
+        // Live previews use a separate short-lived FTP connection and read only
+        // the byte count already advertised by LIST. Final processing still
+        // waits for a stable upload.
+        if(diagnosticLivePreviewShouldRead(entry.size,ticket.previewSourceSize)){
           try{
             const snapshotSource=await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit);
             snapshotContent=compactReadableControllerLog(snapshotSource,captureLimitBytes);
