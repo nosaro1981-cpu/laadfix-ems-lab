@@ -44,6 +44,17 @@ test('Homebox en backoffice ontvangen exact dezelfde berichten via relay', {time
  assert.equal(app.state.chargerConnected,true);assert.equal(app.state.backendConnected,true);assert.equal(app.state.connectionDiagnostics.stage,'online');assert.equal(app.state.connectionDiagnostics.bootAccepted,false);assert.ok(app.state.connectionDiagnostics.lastIngressAt);assert.ok(app.state.connectionDiagnostics.lastBackendConnectedAt);assert.ok(app.state.connectionTimeline.some(row=>row.type==='backend_connected'));assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_traffic'));
  }finally{charger?.terminate();up?.terminate();up2?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+test('Een nieuwe Render-relay controleert de bestaande Homeboxsessie actief', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'READY',upstream:'ws://127.0.0.1:'+backend.address().port+'/READY',meterLogFile:null,backendReconnectProbeDelayMs:20,backendCommandTimeoutMs:100});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/READY','ocpp1.6');await once(charger,'open');[up]=await connected;
+  const call=JSON.parse((await once(charger,'message'))[0].toString());assert.equal(call[2],'TriggerMessage');assert.deepEqual(call[3],{requestedMessage:'BootNotification'});
+  charger.send(JSON.stringify([3,call[1],{status:'Accepted'}]));await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(app.state.commandHealth.status,'healthy');assert.equal(app.state.connectionDiagnostics.chargerTrafficSeen,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_readiness_probe'));
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
 test('Relay wijst een andere laadpaal-ID af', {timeout:5000},async()=>{
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'TEST',upstream:'ws://127.0.0.1/TEST',meterLogFile:null});
  try{const ws=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/OTHER','ocpp1.6');ws.on('error',()=>{});const [,res]=await once(ws,'unexpected-response');assert.equal(res.statusCode,403);ws.terminate();assert.equal(app.state.chargerConnected,false);assert.equal(app.state.connectionDiagnostics.lastFailureType,'path');assert.equal(app.state.connectionDiagnostics.rejectedUpgrades,1);assert.ok(app.state.connectionTimeline.some(row=>row.type==='rejected'));}finally{await app.close();}
