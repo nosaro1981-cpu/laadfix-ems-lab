@@ -298,12 +298,22 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
         let snapshotContent=null;
-        // Ordinary previews wait for a stable file. Compact diagnoses are the
-        // exception: once their byte limit (or an explicit finish request) is
-        // reached, capture that bounded snapshot and finish immediately.
+        // vsftpd does not allow a reliable RETR while the Homebox still has the
+        // same file open for writing. Ask the existing per-file stop watcher to
+        // close only this upload, then read the now-stable snapshot next poll.
+        const compactCloseRequested=ticket.fastScan&&(ticket.finishRequested||entry.size>=captureLimitBytes);
+        if(compactCloseRequested&&!ticket.ftpAbortRequested){
+          ticket.ftpAbortRequested=true;
+          try{
+            await requestFtpAbort({...ticket,fileName});
+            updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Momentopname afronden',percent:82,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+3000).toISOString()},{status:'Ontvangen gegevens worden veilig afgesloten'});
+          }catch(error){
+            ticket.ftpAbortRequested=false;
+            throw error;
+          }
+        }
         const snapshotSafe=diagnosticFtpSnapshotSafe(entry.size,previousSize,stable);
-        const compactStopRequested=ticket.fastScan&&(ticket.finishRequested||entry.size>=captureLimitBytes);
-        if((snapshotSafe||compactStopRequested)&&ticket.previewSourceSize!==entry.size){
+        if(snapshotSafe&&ticket.previewSourceSize!==entry.size){
           try{
             const snapshotSource=await readGrowingDiagnosticSnapshot(url,remote,entry.size,previewSourceLimit);
             snapshotContent=compactReadableControllerLog(snapshotSource,captureLimitBytes);
@@ -314,7 +324,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             }
           }catch{}
         }
-        if(ticket.fastScan&&(snapshotSafe||compactStopRequested)&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
+        if(ticket.fastScan&&snapshotSafe&&diagnosticCaptureShouldStop(entry.size,snapshotContent?.length||0,captureLimitBytes,ticket.finishRequested)){
           ticket.finishRequested=true;
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Compacte grens bereikt · belangrijke gegevens uitlezen',percent:80,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Belangrijke gegevens worden direct uitgelezen'});
           updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Belangrijke gegevens live uitlezen',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+3000).toISOString()},{status:'Live gegevens analyseren'});
@@ -549,8 +559,13 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const chargerId=String(body.id||''),ticket=activeFtpTickets.get(chargerId)||[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
         if(!ticket)throw Error('Er loopt geen diagnose voor dit laadstation');
         ticket.fastScan=true;ticket.finishRequested=true;
-        updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens afronden',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:'Handmatig afronden aangevraagd'});
-        return send(202,{status:'De FTP-schrijver wordt bij de volgende controle veilig gestopt; daarna analyseert LaadFix direct de nieuwste gegevens'});
+        let closeRequested=false;
+        if(ticket.fileName&&!ticket.ftpAbortRequested){
+          ticket.ftpAbortRequested=true;
+          try{closeRequested=await requestFtpAbort(ticket);}catch(error){ticket.ftpAbortRequested=false;throw error;}
+        }
+        updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Huidige live gegevens afronden',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs+5000).toISOString()},{status:closeRequested?'Ontvangen gegevens worden veilig afgesloten':'Handmatig afronden aangevraagd'});
+        return send(202,{status:closeRequested?'De huidige momentopname wordt direct afgesloten en daarna geanalyseerd':'De upload wordt afgesloten zodra het diagnosebestand is gevonden'});
       }
       if(req.url==='/api/fleet-command'){
         if(typeof fleetCommander!=='function')throw Error('Vlootbediening is alleen online beschikbaar');
