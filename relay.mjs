@@ -104,6 +104,17 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
       active.down.send(JSON.stringify([2,uid,action,payload]),{binary:false},err=>{if(err){clearTimeout(timer);pending.delete(uid);reject(err);}});
     });
   }
+  function confirmDiagnosticsUpload(fileName){
+    let confirmed=0;
+    const finished=new Date().toISOString();
+    for(const [uid,item] of pending){
+      if(item.sessionId!==active?.sessionId||item.action!=='GetDiagnostics')continue;
+      clearTimeout(item.timer);pending.delete(uid);confirmed++;
+      item.resolve({fileName:String(fileName||''),confirmedBy:'ftp'});
+    }
+    if(confirmed){state.lastLocalCommand={action:'GetDiagnostics',status:'FTP-upload ontvangen',finished,result:{fileName}};markCommandAnswered('GetDiagnostics',finished);log('Homebox → lokaal','GetDiagnostics · FTP-upload bevestigd');}
+    return{status:confirmed?'Confirmed':'NoPendingCommand',confirmed};
+  }
   const server=http.createServer((req,res)=>{res.writeHead(426);res.end('OCPP WebSocket vereist');});
   // Some Ecotap controller builds emit text frames that are accepted by their
   // backend but fail the strict UTF-8 validator in ws. Preserve those bytes so
@@ -172,7 +183,7 @@ export async function startRelay({port=8765, monitorPort=8081, host='0.0.0.0', a
     if(req.method==='POST'&&req.url==='/api/command'){
       if(req.socket.remoteAddress!=='127.0.0.1'&&req.socket.remoteAddress!=='::ffff:127.0.0.1')return send(403,{error:'Alleen lokaal toegestaan'});
       if(req.headers['content-type']!=='application/json')return send(415,{error:'JSON vereist'});
-      try{let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>16384)throw Error('Aanvraag te groot');}const body=JSON.parse(raw);if(body.action==='reconnectBackend')return send(200,{result:active?.reconnectBackend?.(true)||{status:'HomeboxOffline'}});const requestedTimeout=Number(body.timeoutMs),timeout=Number.isInteger(requestedTimeout)?Math.max(1000,Math.min(120000,requestedTimeout)):undefined;return send(200,{result:await localCommand(body.action,body.payload,timeout)});}catch(e){return send(400,{error:e.message});}
+      try{let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>16384)throw Error('Aanvraag te groot');}const body=JSON.parse(raw);if(body.action==='reconnectBackend')return send(200,{result:active?.reconnectBackend?.(true)||{status:'HomeboxOffline'}});if(body.action==='confirmDiagnosticsUpload')return send(200,{result:confirmDiagnosticsUpload(body.payload?.fileName)});const requestedTimeout=Number(body.timeoutMs),timeout=Number.isInteger(requestedTimeout)?Math.max(1000,Math.min(120000,requestedTimeout)):undefined;return send(200,{result:await localCommand(body.action,body.payload,timeout)});}catch(e){return send(400,{error:e.message});}
     }
     if(req.method==='POST'&&req.url==='/api/routing'){
       if(req.socket.remoteAddress!=='127.0.0.1'&&req.socket.remoteAddress!=='::ffff:127.0.0.1')return send(403,{error:'Alleen lokaal toegestaan'});

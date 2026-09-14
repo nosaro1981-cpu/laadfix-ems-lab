@@ -202,3 +202,18 @@ test('Proxy bevestigt een stille Homebox met WebSocket ping en pong', {timeout:5
   assert.equal(charger.readyState,WebSocket.OPEN);
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+
+test('Een ontvangen FTP-bestand bevestigt GetDiagnostics zonder los OCPP-antwoord', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'FTP-PROOF',upstream:'ws://127.0.0.1:'+backend.address().port+'/FTP-PROOF',meterLogFile:null,backendReconnectProbeDelayMs:5000});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/FTP-PROOF','ocpp1.6');await once(charger,'open');[up]=await connected;
+  const command=fetch('http://127.0.0.1:'+app.monitorPort+'/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'GetDiagnostics',payload:{location:'ftp://example.test/'},timeoutMs:3000})});
+  const call=JSON.parse((await once(charger,'message'))[0].toString());assert.equal(call[2],'GetDiagnostics');
+  const confirmation=await fetch('http://127.0.0.1:'+app.monitorPort+'/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'confirmDiagnosticsUpload',payload:{fileName:'FTP-PROOF-diag.txt'}})});
+  assert.equal(confirmation.status,200);assert.equal((await confirmation.json()).result.status,'Confirmed');
+  const result=await command;assert.equal(result.status,200);assert.equal((await result.json()).result.fileName,'FTP-PROOF-diag.txt');
+  assert.equal(app.state.commandHealth.status,'healthy');assert.equal(app.state.commandHealth.degraded,false);assert.equal(charger.readyState,WebSocket.OPEN);
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
