@@ -55,6 +55,16 @@ test('Een nieuwe Render-relay controleert de bestaande Homeboxsessie actief', {t
   assert.equal(app.state.commandHealth.status,'healthy');assert.equal(app.state.connectionDiagnostics.chargerTrafficSeen,true);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_readiness_probe'));
  }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
 });
+test('Een blijvend stille Homeboxsessie wordt gecontroleerd opnieuw opgebouwd', {timeout:5000},async()=>{
+ const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
+ const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'STALE',upstream:'ws://127.0.0.1:'+backend.address().port+'/STALE',meterLogFile:null,backendReconnectProbeDelayMs:10,backendReconnectProbeRetryMs:5,backendReconnectProbeAttempts:2,backendReconnectProbeTimeoutMs:20});
+ let charger,up;
+ try{
+  const connected=once(backend,'connection');charger=new WebSocket('ws://127.0.0.1:'+app.port+'/ocpp/STALE','ocpp1.6');await once(charger,'open');[up]=await connected;
+  await once(charger,'message');await once(charger,'message');const [code]=await once(charger,'close');
+  assert.equal(code,1012);assert.ok(app.state.connectionTimeline.some(row=>row.type==='charger_session_recovery'));
+ }finally{charger?.terminate();up?.terminate();await app.close();await new Promise(r=>backend.close(r));}
+});
 test('Een reagerende Homeboxsessie blijft actief en ruimt een stille duplicaatsessie op', {timeout:5000},async()=>{
  const backend=new WebSocketServer({port:0,host:'127.0.0.1',handleProtocols:()=> 'ocpp1.6'});await once(backend,'listening');
  const app=await startRelay({port:0,monitorPort:0,host:'127.0.0.1',allowedIp:'127.0.0.1',id:'DUPLICATE',upstream:'ws://127.0.0.1:'+backend.address().port+'/DUPLICATE',meterLogFile:null,backendReconnectProbeDelayMs:20,backendCommandTimeoutMs:100});
