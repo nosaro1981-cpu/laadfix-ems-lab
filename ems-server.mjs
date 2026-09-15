@@ -596,7 +596,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const chargerId=String(body.id||''),fileName=String(body.fileName||'').trim();
         if(!recoveryStations().some(item=>item.id===chargerId))throw Error('Onbekend laadstation');
         if(!diagnosticFileBelongsToStation(chargerId,fileName))throw Error('Bestandsnaam hoort niet bij dit laadstation');
-        const ticket={chargerId,requestedAt:new Date().toISOString(),source:'Handmatige bestandsnaam',destination:diagnosticDestination,locationHost:diagnosticFtpHost,expiresAt:Date.now()+15*60_000,fileName};
+        const ticket={chargerId,requestedAt:new Date().toISOString(),source:'Handmatige bestandsnaam',destination:diagnosticDestination,locationHost:diagnosticFtpHost,expiresAt:Date.now()+15*60_000,fileName,fastScan:true,finishRequested:true,captureLimitBytes:5*1024*1024};
         diagnosticReports.set(chargerId,{...ticket,status:'FTP-bestand wordt gezocht',transport:'FTP'});
         scheduleFtpDiagnosticDownload(chargerId,ticket);return send(202,{status:'FTP-bestand wordt gezocht',fileName});
       }
