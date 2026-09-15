@@ -1,12 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {diagnosticFastScanEnabled,startEMS} from './ems-server.mjs';
+import {diagnosticFastScanEnabled,diagnosticFinishUsesCompactMode,startEMS} from './ems-server.mjs';
 
 test('normal diagnostics always preserve the complete received file',()=>{
   assert.equal(diagnosticFastScanEnabled({normalMode:true,fastScan:true}),false);
   assert.equal(diagnosticFastScanEnabled({normalMode:true,fastScan:false}),false);
   assert.equal(diagnosticFastScanEnabled({fastScan:true}),true);
+});
+
+test('finishing a normal diagnosis keeps full-file processing active',()=>{
+  assert.equal(diagnosticFinishUsesCompactMode({normalMode:true}),false);
+  assert.equal(diagnosticFinishUsesCompactMode({normalMode:false}),true);
 });
 
 for (const quietDiagnostics of [false, true]) test(`automatic meter requests respect optional upload quiet mode: ${quietDiagnostics}`, async () => {

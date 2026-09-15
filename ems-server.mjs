@@ -67,6 +67,9 @@ export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
 export function diagnosticFastScanEnabled(body={}){
   return body.normalMode===true?false:body.fastScan===true;
 }
+export function diagnosticFinishUsesCompactMode(ticket={}){
+  return ticket.normalMode!==true;
+}
 export function diagnosticStationResponsive(item,now=Date.now(),maxAgeMs=180_000){
   return !!item?.chargerConnected&&!!item?.backendConnected&&item?.commandRouteReady!==false;
 }
@@ -339,6 +342,11 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           }catch{}
         }
         const captureBoundaryReached=entry.size>=captureLimitBytes||(snapshotContent?.length&&diagnosticCaptureShouldStop(entry.size,snapshotContent.length,captureLimitBytes,ticket.finishRequested));
+        if(ticket.normalMode&&!ticket.finishRequested&&entry.size>=captureLimitBytes){
+          ticket.finishRequested=true;
+          ticket.abortRequested=await requestFtpAbort(ticket)||ticket.abortRequested;
+          updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Normale loggrens bereikt · volledige ontvangst afronden',percent:84,uploadBytes:entry.size,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs*2+5000).toISOString()},{status:'Volledig ontvangen bestand wordt afgerond',error:null});
+        }
         if(ticket.fastScan&&(ticket.finishRequested||captureBoundaryReached)){
           ticket.finishRequested=true;
           if(!ticket.abortRequested){
@@ -383,7 +391,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       }catch(error){
         const failed=attempts>=diagnosticFtpMaxAttempts;
         if(failed&&ticket.originalDebug){updateDiagnosticProgress(chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94,estimatedCompleteAt:new Date(Date.now()+10_000).toISOString()},{status:'Debuginstelling herstellen na overdrachtsfout'});await restoreDiagnosticDebug(ticket);}
-        updateDiagnosticProgress(chargerId,ticket,{phase:failed?'failed':'uploading',label:failed?'Online upload mislukt':'Wachten op diagnosebestand',percent:failed?100:Math.min(84,65+attempts),estimatedCompleteAt:new Date(Date.now()+Math.max(15_000,(diagnosticFtpMaxAttempts-attempts)*diagnosticFtpPollMs)).toISOString()},{status:failed?'Mislukt':'Online upload wordt gevolgd',error:String(error.message||'FTP-fout').replace(diagnosticFtpUrl,'FTP-server'),ftpAttempt:attempts,debugRestoreStatus:ticket.debugRestoreStatus});
+        updateDiagnosticProgress(chargerId,ticket,{phase:failed?'failed':'uploading',label:failed?'Online upload mislukt':'Wachten op diagnosebestand',percent:failed?100:Math.min(84,65+attempts),estimatedCompleteAt:new Date(Date.now()+Math.max(15_000,(diagnosticFtpMaxAttempts-attempts)*diagnosticFtpPollMs)).toISOString()},{status:failed?'Mislukt':'Online upload wordt gevolgd',error:failed?String(error.message||'FTP-fout').replace(diagnosticFtpUrl,'FTP-server'):null,ftpAttempt:attempts,debugRestoreStatus:ticket.debugRestoreStatus});
         if(failed){releaseDiagnosticTicket(ticket);scheduledFtpFiles.delete(scheduleKey);activeFtpTickets.delete(chargerId);}else setTimeout(run,diagnosticFtpPollMs).unref();
       }finally{client.close();}
     };
@@ -582,7 +590,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(req.url==='/api/diagnostics-finish'){
         const chargerId=String(body.id||''),ticket=activeFtpTickets.get(chargerId)||[...diagnosticTokens.values()].find(item=>item.chargerId===chargerId&&!item.ending);
         if(!ticket)throw Error('Er loopt geen diagnose voor dit laadstation');
-        ticket.fastScan=true;ticket.finishRequested=true;
+        ticket.fastScan=diagnosticFinishUsesCompactMode(ticket);ticket.finishRequested=true;
         ticket.abortRequested=await requestFtpAbort(ticket)||ticket.abortRequested;
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.abortRequested?'FTP-overdracht wordt veilig gestopt':'Huidige live gegevens analyseren',percent:86,estimatedCompleteAt:new Date(Date.now()+diagnosticFtpPollMs*2+5000).toISOString()},{status:ticket.abortRequested?'Stopopdracht verzonden':'Handmatig afronden aangevraagd'});
         return send(202,{status:ticket.abortRequested?'De FTP-overdracht wordt gestopt; de OCPP-verbinding blijft open en de ontvangen gegevens worden geanalyseerd.':'De veilig gekopieerde gegevens worden direct geanalyseerd.'});
@@ -616,7 +624,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(durationSeconds!==null&&(!Number.isInteger(durationSeconds)||durationSeconds<(body.fastScan===true?10:30)||durationSeconds>300))throw Error(body.fastScan===true?'Een snelle technische scan duurt 10 tot 300 seconden':'Kies een diagnoseduur van 30 seconden, 1 minuut of 5 minuten');
           if(Array.isArray(body.debugModules)&&(body.debugModules.length<1||body.debugModules.length>DIAGNOSTIC_DEBUG_KEYS.size||body.debugModules.some(value=>!DIAGNOSTIC_DEBUG_KEYS.has(String(value).toLowerCase()))))throw Error('Kies minimaal één geldige diagnosecategorie');
           const minutes=durationSeconds===null?null:durationSeconds/60;
-          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.quickMode===true||(body.quickMode===undefined&&body.enhancedDebug===false),normalMode:body.normalMode===true,enhancedDebug:body.enhancedDebug!==false,fastScan:diagnosticFastScanEnabled(body),debugModules:Array.isArray(body.debugModules)?body.debugModules:[],livePreview:null,bytes:0,captureLimitBytes:body.longMode===true?96*1024:body.normalMode===true?48*1024:diagnosticSmartCaptureBytes,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.quickMode===true||(body.quickMode===undefined&&body.enhancedDebug===false),normalMode:body.normalMode===true,enhancedDebug:body.enhancedDebug!==false,fastScan:diagnosticFastScanEnabled(body),debugModules:Array.isArray(body.debugModules)?body.debugModules:[],livePreview:null,bytes:0,captureLimitBytes:body.longMode===true?96*1024:body.normalMode===true?128*1024:diagnosticSmartCaptureBytes,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         if(action==='diagnostics'&&body.enhancedDebug!==false){
           const ticket=diagnosticTokens.get(diagnosticToken);
