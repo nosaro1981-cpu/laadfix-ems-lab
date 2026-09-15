@@ -80,6 +80,12 @@ test('Diagnose-overzicht signaleert een meteradres dat niet bij de socket past',
   const overview=extractDiagnosticOverview(log);assert.equal(overview.activeMeterCount,1);assert.equal(overview.supervisorClientCount,2);assert.deepEqual(overview.addressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);assert.deepEqual(overview.observedAddressMismatches.map(row=>[row.slot,row.address]),[[2,1]]);
 });
 
+test('Runtime SLAVECOUNT weegt zwaarder dan de supervisorconfiguratie',()=>{
+ const log='PGrid[3:MASTER]MIN.I[6]STATION[16]INSTALLATION[60]SUPERVISOR[0]\nSLAVECOUNT[2]\n'+JSON.stringify({configurationKey:[{key:'grid_CommChannel',readonly:false,value:'canbus'},{key:'grid_Role',readonly:false,value:'master'},{key:'grid_SupervisorClientCount',readonly:false,value:'0'}]});
+ const overview=extractDiagnosticOverview(log);
+ assert.equal(overview.runtimeSlaveCount,2);assert.equal(overview.supervisorClientCount,0);assert.equal(overview.runtimeSupervisor,0);assert.equal(overview.canPeerDetected,true);assert.equal(overview.loadBalancingDetected,true);
+});
+
 test('CAN-status onderscheidt alleen initialisatie van echte master-slavecommunicatie',()=>{
  const idle=extractDiagnosticOverview('CAN RX RINGBUFFER CTX: 0x1000\nCAN TX RINGBUFFER CTX: 0x2000\n'+JSON.stringify({configurationKey:[{key:'grid_CommChannel',readonly:false,value:'canbus'},{key:'grid_Role',readonly:false,value:'master'},{key:'grid_SupervisorClientCount',readonly:false,value:'0'}]}));
  assert.equal(idle.canConfigured,true);assert.equal(idle.canPeerExpected,true);assert.equal(idle.canPeerDetected,false);assert.equal(idle.canLevel,'critical');assert.equal(idle.canRxFrames,0);
