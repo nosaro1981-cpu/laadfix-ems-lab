@@ -10,7 +10,8 @@ export function reconcileGatewayState(item,gateway,now=Date.now()){
   const lastChargerMessageAt=Date.parse(item.connectionDiagnostics?.lastChargerMessageAt||'');
   const lastCommandTimeoutAt=Date.parse(item.commandHealth?.lastTimeoutAt||'');
   const chargerTrafficSeen=item.connectionDiagnostics?.chargerTrafficSeen===true&&Number.isFinite(lastChargerMessageAt);
-  const trafficAfterTimeout=!item.commandHealth?.degraded||lastChargerMessageAt>lastCommandTimeoutAt;
+  const recentChargerTraffic=chargerTrafficSeen&&now-lastChargerMessageAt<=180_000;
+  const trafficAfterTimeout=!item.commandHealth?.degraded||lastChargerMessageAt>lastCommandTimeoutAt||recentChargerTraffic;
   const commandRouteReady=item.chargerConnected===true&&item.backendConnected===true&&chargerTrafficSeen&&trafficAfterTimeout;
   const localState={...item,commandRouteReady};
   if(!gateway?.ok||now-Number(gateway.checkedAt||0)>45000)return localState;

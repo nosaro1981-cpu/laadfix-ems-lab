@@ -13,10 +13,12 @@ test('Een open lokale OCPP-socket met echt laderverkeer blijft leidend',()=>{
   assert.equal(state.gatewayHealth.disagreesWithLocal,true);
 });
 
-test('Een vastgelopen lokale commandoroute wordt pas na nieuw laderverkeer vrijgegeven',()=>{
+test('Recente Homebox-activiteit houdt de commandoroute beschikbaar na een specifieke time-out',()=>{
   const now=Date.now(),gateway={ok:true,chargerConnected:true,backendConnected:true,socketCount:1,checkedAt:now};
   const stalled=reconcileGatewayState({chargerConnected:true,backendConnected:true,connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-30_000).toISOString()},commandHealth:{degraded:true,lastTimeoutAt:new Date(now-10_000).toISOString()}},gateway,now);
-  assert.equal(stalled.commandRouteReady,false);
+  assert.equal(stalled.commandRouteReady,true);
+  const stale=reconcileGatewayState({chargerConnected:true,backendConnected:true,connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-181_000).toISOString()},commandHealth:{degraded:true,lastTimeoutAt:new Date(now-10_000).toISOString()}},gateway,now);
+  assert.equal(stale.commandRouteReady,false);
   const recovered=reconcileGatewayState({...stalled,connectionDiagnostics:{chargerTrafficSeen:true,lastChargerMessageAt:new Date(now-1_000).toISOString()}},gateway,now);
   assert.equal(recovered.commandRouteReady,true);
 });
