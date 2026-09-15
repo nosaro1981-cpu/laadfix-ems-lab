@@ -544,7 +544,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>260000)throw Error('Aanvraag te groot');}
       const body=JSON.parse(raw);
       if(req.url==='/api/fleet-register'){
-        const result=await registerStation(body.id);await refreshHardware();return send(result.alreadyRegistered?200:201,{result,fleet:charger.fleet});
+        const result=await registerStation(body.id);await refreshHardware();const registeredFleet=typeof fleetProvider==='function'?fleetProvider():charger.fleet;return send(result.alreadyRegistered?200:201,{result,fleet:registeredFleet});
       }
       if(req.url==='/api/recovery-case/open'){
         if(busy)return send(429,{error:'Er loopt al een opdracht. Wacht op de uitkomst.'});
@@ -613,7 +613,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           if(durationSeconds!==null&&(!Number.isInteger(durationSeconds)||durationSeconds<(body.fastScan===true?10:30)||durationSeconds>300))throw Error(body.fastScan===true?'Een snelle technische scan duurt 10 tot 300 seconden':'Kies een diagnoseduur van 30 seconden, 1 minuut of 5 minuten');
           if(Array.isArray(body.debugModules)&&(body.debugModules.length<1||body.debugModules.length>DIAGNOSTIC_DEBUG_KEYS.size||body.debugModules.some(value=>!DIAGNOSTIC_DEBUG_KEYS.has(String(value).toLowerCase()))))throw Error('Kies minimaal één geldige diagnosecategorie');
           const minutes=durationSeconds===null?null:durationSeconds/60;
-          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.quickMode===true||(body.quickMode===undefined&&body.enhancedDebug===false),enhancedDebug:body.enhancedDebug!==false,fastScan:body.fastScan===true,debugModules:Array.isArray(body.debugModules)?body.debugModules:[],livePreview:null,bytes:0,captureLimitBytes:body.longMode===true?96*1024:body.normalMode===true?48*1024:diagnosticSmartCaptureBytes,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
+          const requestedAt=ocppDateTime(Date.now()),stopTime=durationSeconds===null?undefined:requestedAt,startTime=durationSeconds===null?undefined:ocppDateTime(Date.now()-durationSeconds*1000),ticket={token:diagnosticToken,chargerId,requestedAt,startTime,stopTime,minutes,durationSeconds,ftpVariant:variant,quietDiagnostics:body.quietDiagnostics===true,quickMode:body.quickMode===true||(body.quickMode===undefined&&body.enhancedDebug===false),normalMode:body.normalMode===true,enhancedDebug:body.enhancedDebug!==false,fastScan:body.fastScan===true,debugModules:Array.isArray(body.debugModules)?body.debugModules:[],livePreview:null,bytes:0,captureLimitBytes:body.longMode===true?96*1024:body.normalMode===true?48*1024:diagnosticSmartCaptureBytes,source:'LaadFix',destination:localReceiver?`Lokale ontvanger (${localReceiverIp})`:diagnosticDestination,locationHost:localReceiverIp||diagnosticFtpHost||publicName,localReceiver,expiresAt:Date.now()+15*60_000,fileName:null,transferEstimateMs:diagnosticTransferEstimateMs(chargerId)};diagnosticTokens.set(diagnosticToken,ticket);updateDiagnosticProgress(chargerId,ticket,{phase:'preparing',label:'Diagnose voorbereiden',percent:4,estimatedCompleteAt:new Date(Date.now()+(durationSeconds||300)*1000+ticket.transferEstimateMs+20_000).toISOString()},{status:'Diagnose voorbereiden',locationReady:true,controllerStatus:item.diagnosticsStatus||null});
         }
         if(action==='diagnostics'&&body.enhancedDebug!==false){
           const ticket=diagnosticTokens.get(diagnosticToken);
@@ -683,9 +683,20 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         }
         if(action==='diagnostics'){
           const ticket=diagnosticTokens.get(diagnosticToken);
+          const readNormalConfiguration=async()=>{
+            if(!ticket.normalMode)return;
+            const configurationTimeout=Math.max(1000,Math.min(15_000,Number(diagnosticConfigurationTimeoutMs)||10_000)),current=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId)||item,liveCachedRows=Array.isArray(current?.configuration)?current.configuration:[],knownRows=KNOWN_DIAGNOSTIC_CONFIGURATION[chargerId]||[],cachedRows=[...new Map([...knownRows,...liveCachedRows].map(row=>[String(row.key||'').toLowerCase(),row])).values()];
+            updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele controllergegevens lezen',percent:22,estimatedCompleteAt:new Date(Date.now()+configurationTimeout+(ticket.transferEstimateMs||100_000)).toISOString()},{status:'Standaarddebug blijft ongewijzigd',error:null});
+            let rows=[];
+            try{const read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];if(!rows.length)ticket.configurationWarning='De Homebox gaf geen actuele configuratieregels terug; de laatst bekende waarden worden gebruikt.';}catch(error){ticket.configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; de laatst bekende waarden worden gebruikt.`;}
+            const combinedConfiguration=new Map([...cachedRows,...rows].map(row=>[String(row.key||'').toLowerCase(),{key:row.key,value:row.value,readonly:!!row.readonly}]));ticket.configuration=[...combinedConfiguration.values()];ticket.meterSettings=ticket.configuration.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));
+            const configurationPreview={...buildDiagnosticReport(chargerId,ticket,Buffer.from('00:00:00:Actuele controllerconfiguratie ontvangen\n')),status:'Live uitlezing',liveStage:'configuration',bytes:0,receivedAt:new Date().toISOString()};ticket.livePreview=configurationPreview;diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),configurationWarning:ticket.configurationWarning,livePreview:configurationPreview});
+            updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Standaardlog opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:'Configuratie gelezen · standaardlog wordt opgehaald',error:null});
+          };
           updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});
           if(!diagnosticFtpUrl||ticket.localReceiver){
             try{
+              await readNormalConfiguration();
               const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
               updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Upload verwacht',fileName:ticket.fileName,controllerResponse:result,error:null});
               return send(200,{result,serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en upload worden gevolgd'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
@@ -693,6 +704,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           }
           setTimeout(async()=>{try{
             if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
+            await readNormalConfiguration();
             const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
             if(!diagnosticTokens.has(ticket.token))return;
             updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,error:null});

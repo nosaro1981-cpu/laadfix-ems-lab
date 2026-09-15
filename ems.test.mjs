@@ -225,6 +225,13 @@ test('Niet beantwoorde configuratie blokkeert de diagnose niet en laat debug ong
  finally{await app.close();}
 });
 
+test('Normale diagnose toont actuele controllergegevens zonder debug te wijzigen',async()=>{
+ const calls=[],fleet=[{id:'NORMAL-CONFIG',chargerConnected:true,backendConnected:true,status:'Available',configuration:[]}],configuration=[{key:'chg_KWH1',value:'EASTR_SDM72D,1,9600,N,1'},{key:'chg_KWH2',value:'None,2,9600,N,1'},{key:'gsm_Model',value:'BG95-M3'},{key:'gsm_SigQ',value:'20'},{key:'eth_cfg',value:'type=dhcp,ip=10.0.0.8,netmask=255.255.255.0,dns=1.1.1.1,gw=10.0.0.1'},{key:'chg_Debug',value:DIAGNOSTIC_DEBUG_BASE}];
+ const app=await startEMS({port:0,host:'127.0.0.1',hardware:false,publicHost:'lab.example.test',authUser:'tester',authPassword:'sterk-wachtwoord',diagnosticConfigurationTimeoutMs:10,fleetProvider:()=>fleet,fleetCommander:async(id,action,payload)=>{calls.push({action,payload});if(action==='GetConfiguration')return{configurationKey:configuration};if(action==='GetDiagnostics')return{fileName:'NORMAL-CONFIG.xls'};return{status:'Accepted'};}}),base='http://127.0.0.1:'+app.port,authorization='Basic '+Buffer.from('tester:sterk-wachtwoord').toString('base64');
+ try{const response=await fetch(base+'/api/fleet-command',{method:'POST',headers:{Authorization:authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify({id:'NORMAL-CONFIG',action:'diagnostics',durationSeconds:120,normalMode:true,enhancedDebug:false,quickMode:false,fastScan:true,debugModules:['modbus','gsm','eth']})});assert.equal(response.status,200);const actions=calls.map(call=>call.action);assert.deepEqual(actions.slice(0,2),['GetConfiguration','GetDiagnostics']);assert.ok(!actions.includes('ChangeConfiguration'));const state=await(await fetch(base+'/api/state',{headers:{Authorization:authorization}})).json(),preview=state.diagnostics['NORMAL-CONFIG'].livePreview;assert.equal(preview.meterConfiguration.type,'EASTR_SDM72D');assert.equal(preview.meterConfiguration.address,'1');assert.equal(preview.cellular.modem,'BG95-M3');assert.equal(preview.cellular.signal,'20');assert.equal(preview.networkConfiguration.localIp,'10.0.0.8');assert.equal(preview.networkConfiguration.gateway,'10.0.0.1');assert.equal(preview.diagnosticDebugPlan.original,DIAGNOSTIC_DEBUG_BASE);}
+ finally{await app.close();}
+});
+
 test('Ontbrekend GetDiagnostics-antwoord gaat door zodra het nieuwe FTP-bestand verschijnt',async()=>{
  const fleet=[{id:'FTP-FALLBACK',chargerConnected:true,backendConnected:true,status:'Available',configuration:[]}],calls=[];let lists=0,app;
  try{
@@ -240,7 +247,7 @@ test('Ontbrekend GetDiagnostics-antwoord gaat door zodra het nieuwe FTP-bestand 
 for(const mode of [
  {name:'bestaande log',body:{enhancedDebug:false,quickMode:true,fastScan:true,durationSeconds:30}},
  {name:'snelle log',body:{fastScan:true,durationSeconds:10,debugModules:['modbus']}},
- {name:'normale log',body:{enhancedDebug:false,quickMode:false,fastScan:true,durationSeconds:30}},
+ {name:'normale log',body:{enhancedDebug:false,quickMode:false,fastScan:true,normalMode:true,durationSeconds:30}},
  {name:'lange log',body:{fastScan:true,longMode:true,durationSeconds:60,debugModules:['modbus'],preserveUnselectedDebug:true}}
 ])test(`${mode.name} verwerkt een FTP-bestand zonder GetDiagnostics-antwoord`,async()=>{
  let lists=0,calls=[],app;const id='ALL-ROUTES-'+mode.name.replace(/\W/g,'').toUpperCase(),fileName=`${id}Diag1789370000.xls`,fleet=[{id,chargerConnected:true,backendConnected:true,status:'Available',activeTransaction:false,configuration:[]}];

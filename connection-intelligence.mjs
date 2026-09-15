@@ -209,8 +209,9 @@ export function extractCellularIdentity(text){
   const registrationCode=lastMatch(source,[/GSM\s+REG\s*:\s*(\d+)/gi,/NETWORK[_ ]REGISTRATION[^\r\n]*?(\d+)/gi]);
   const registration={'0':'Niet geregistreerd','1':'Geregistreerd op thuisnetwerk','2':'Netwerk zoeken','3':'Registratie geweigerd','4':'Status onbekend','5':'Geregistreerd via roaming'}[registrationCode]||null;
   const signal=lastMatch(source,[/\b(?:SQ|CSQ)\s*[:=]\s*(\d{1,2})/gi,/\bgsm_SigQ\s*[:=]\s*(\d{1,2})/gi]);
+  const rawModem=lastMatch(source,[/GSM\s+Modem\s*:\s*([^\r\n]+)/gi,/gsm_Model[^\r\n:=]*[:=]\s*([^,;\r\n]+)/gi]),configurationModem=lastMatch(source, [/"key"\s*:\s*"gsm_Model"[^\r\n]*?"value"\s*:\s*"([^"]+)"/gi]),modem=rawModem&&!/^(?:false|true|null|undefined)$/i.test(rawModem)?rawModem:configurationModem;
   return {
-    modem:lastMatch(source,[/GSM\s+Modem\s*:\s*([^\r\n]+)/gi,/gsm_Model[^\r\n:=]*[:=]\s*([^,;\r\n]+)/gi]),
+    modem,
     imei:lastMatch(source,[/\bIMEI\s*[:=]?\s*\[?([0-9]{14,17})\]?/gi]),
     imsi:lastMatch(source,[/\bIMSI\s*[:=]?\s*\[?([0-9]{14,16})\]?/gi]),
     iccid:lastMatch(source,[/\b(?:ICCID|CCID)\s*[:=]?\s*\[?([0-9]{18,22})\]?/gi]),
