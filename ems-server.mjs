@@ -64,6 +64,13 @@ export function diagnosticFtpSnapshotSafe(entrySize,previousSize,stablePolls){
 export function diagnosticLivePreviewShouldRead(entrySize,previewSourceSize){
   return Number(entrySize)>=1024&&Number(entrySize)!==Number(previewSourceSize||0);
 }
+export function diagnosticFileBelongsToStation(chargerId,fileName){
+  const id=String(chargerId||'').trim(),raw=String(fileName||''),name=raw.replace(/\\/g,'/').split('/').at(-1)||'';
+  if(raw!==name)return false;
+  if(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(id)||!/^[A-Za-z0-9._-]{1,180}\.(?:xls|txt|log)$/i.test(name))return false;
+  const prefix=id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp(`^${prefix}(?:Diag|[-_]diag[-_]).*\\.(?:xls|txt|log)$`,'i').test(name);
+}
 export function diagnosticFastScanEnabled(body={}){
   return body.normalMode===true?false:body.fastScan===true;
 }
@@ -133,15 +140,15 @@ export function assessService(charger,now=Date.now()) {
   const status=charger.effectiveStatus||charger.status;
   const layers=[
     {key:'service',name:'Lokale service',ok:charger.relayReachable,detail:charger.relayReachable?'Proxy en dashboard bereikbaar':'OCPP-proxy niet bereikbaar'},
-    {key:'station',name:'Homebox',ok:charger.chargerConnected,detail:charger.chargerConnected?'OCPP-verbinding actief':'Geen inkomende OCPP-verbinding'},
+    {key:'station',name:'laadcontroller',ok:charger.chargerConnected,detail:charger.chargerConnected?'OCPP-verbinding actief':'Geen inkomende OCPP-verbinding'},
     {key:'backend',name:'Robo Charge',ok:charger.backendConnected,detail:charger.backendConnected?'Backoffice verbonden':'Backoffice niet verbonden'},
     {key:'heartbeat',name:'Recente communicatie',ok:age!==null&&age<240000,detail:age===null?'Nog geen bericht ontvangen':age<240000?`Laatste bericht ${Math.max(0,Math.round(age/1000))} seconden geleden`:`Laatste bericht ${Math.round(age/60000)} minuten geleden`},
     {key:'charger',name:'Laadcontroller',ok:!['Faulted','Unavailable'].includes(status)&&(!charger.errorCode||charger.errorCode==='NoError'),detail:charger.errorCode&&charger.errorCode!=='NoError'?`${status}: ${charger.errorCode}`:status||'Status onbekend'},
   ];
   let severity='ok',summary='Installatie communiceert normaal',advice='Geen herstelactie nodig.';
   if(!charger.relayReachable){severity='critical';summary='Lokale OCPP-service is niet bereikbaar';advice='Start de lokale service opnieuw.';}
-  else if(!charger.chargerConnected){severity='critical';summary='Homebox meldt zich niet aan bij de proxy';advice='Controleer com_Endpoint, ethernet en herstart alleen de communicatie of laadcontroller.';}
-  else if(!charger.backendConnected){severity='critical';summary='Homebox bereikt de proxy, maar Robo Charge niet';advice='Controleer internet, DNS en de upstream-backoffice.';}
+  else if(!charger.chargerConnected){severity='critical';summary='laadcontroller meldt zich niet aan bij de proxy';advice='Controleer com_Endpoint, ethernet en herstart alleen de communicatie of laadcontroller.';}
+  else if(!charger.backendConnected){severity='critical';summary='laadcontroller bereikt de proxy, maar Robo Charge niet';advice='Controleer internet, DNS en de upstream-backoffice.';}
   else if(age===null||age>=240000){severity='warning';summary='OCPP-communicatie is stilgevallen';advice='Vraag eerst een actuele status op. Voer pas daarna eventueel een soft reset uit.';}
   else if(['Faulted','Unavailable'].includes(status)||charger.errorCode&&charger.errorCode!=='NoError'){severity='warning';summary=`Laadpunt meldt ${status||charger.errorCode}`;advice='Lees de foutcode en configuratie uit voordat je een reset uitvoert.';}
   return {severity,summary,advice,layers,lastMessageAgeMs:age,lastHeartbeatAgeMs:heartbeatAge,activeTransaction:!!charger.activeTransaction,generatedAt:new Date(now).toISOString()};
@@ -207,7 +214,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
   const diagnosticTransferEstimateMs=chargerId=>{const samples=(diagnosticHistories.get(chargerId)||[]).map(row=>Date.parse(row.receivedAt)-Date.parse(row.stopTime||row.requestedAt)).filter(value=>Number.isFinite(value)&&value>5_000&&value<10*60_000).slice(0,6).sort((a,b)=>a-b);if(!samples.length)return 45_000;return Math.max(15_000,Math.min(120_000,samples[Math.floor(samples.length/2)]));};
   const diagnosticFtpAccess=async client=>{const url=new URL(diagnosticFtpUrl);await client.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});return{directory:decodeURIComponent(url.pathname||'/').replace(/\/$/,'')||'/'};};
   const diagnosticRemotePath=(directory,file)=>(directory==='/'?'':directory)+'/'+file;
-  const diagnosticFilePattern=chargerId=>{const prefix=String(chargerId).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return new RegExp(`^${prefix}(?:Diag|[-_]diag[-_]).*\\.(?:xls|txt|log)$`,'i');};
+  const diagnosticFilePattern=chargerId=>({test:fileName=>diagnosticFileBelongsToStation(chargerId,fileName)});
+  const requireStationDiagnosticFile=(chargerId,fileName)=>{if(!diagnosticFileBelongsToStation(chargerId,fileName))throw Error(`Diagnosebestand hoort niet bij het geselecteerde laadstation ${chargerId}`);return String(fileName).replace(/\\/g,'/').split('/').at(-1);};
   const listDiagnosticFtpEntries=async()=>{
     if(typeof diagnosticFtpLister==='function')return await diagnosticFtpLister();
     const client=new FtpClient(8000);try{const{directory}=await diagnosticFtpAccess(client);return await client.list(directory);}finally{client.close();}
@@ -260,7 +268,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     try {
       const result = await stationCommand(chargerId, 'GetDiagnostics', { location: diagnosticFtpUrl || `https://${publicName}/api/diagnostics-upload/${token}/${encodeURIComponent(chargerId)}`, retries: 2, retryInterval: 60, startTime, stopTime });
       if (result?.errorCode) throw Error(result.errorDescription || result.errorCode);
-      ticket.fileName = result?.fileName || null;
+      ticket.fileName = result?.fileName ? requireStationDiagnosticFile(chargerId,result.fileName) : null;
       // The upload may finish before the OCPP response arrives.
       const received = diagnosticReports.get(chargerId);
       if (received?.status !== 'Ontvangen') diagnosticReports.set(chargerId, { ...received, status: ticket.fileName ? (diagnosticFtpUrl?'FTP-upload wordt gevolgd':'Upload verwacht') : 'Mislukt', fileName: ticket.fileName, error: ticket.fileName ? null : 'Geen bestandsnaam ontvangen.', transport: diagnosticFtpUrl ? 'FTP' : 'HTTPS' });
@@ -287,7 +295,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       await previewClient.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
       const normalized=String(remote).replace(/\\/g,'/'),slash=normalized.lastIndexOf('/'),directory=slash>0?normalized.slice(0,slash):'/',fileName=normalized.slice(slash+1),snapshotName=`.laadfix-preview-${fileName}`,snapshotRemote=diagnosticRemotePath(directory,snapshotName),markerRemote=diagnosticRemotePath(directory,`${snapshotName}.req`);
       // The FTP host copies the bytes that already exist to a stable sibling.
-      // Reading that copy cannot disturb the Homebox process writing the source.
+      // Reading that copy cannot disturb the laadcontroller process writing the source.
       await previewClient.uploadFrom(Readable.from([Buffer.from(new Date().toISOString())]),markerRemote);
       await new Promise(resolve=>setTimeout(resolve,750));
       const sink=new Writable({write(chunk,encoding,callback){const remaining=wanted-bytes;if(remaining>0){const part=chunk.subarray(0,remaining);chunks.push(Buffer.from(part));bytes+=part.length;}callback(bytes>=wanted?Error(snapshotDone):null);}});
@@ -301,6 +309,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     }finally{previewClient.close();}
   };
   const scheduleFtpDiagnosticDownload=(chargerId,ticket)=>{
+    ticket.fileName=requireStationDiagnosticFile(chargerId,ticket.fileName);
     const scheduleKey=`${chargerId}:${ticket.fileName}`;
     if(scheduledFtpFiles.has(scheduleKey))return;
     scheduledFtpFiles.add(scheduleKey);
@@ -312,7 +321,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       const client=new FtpClient(15000);
       try{
         const url=new URL(diagnosticFtpUrl),fileName=String(ticket.fileName||'').split(/[\\/]/).at(-1);
-        if(!fileName)throw Error('Homebox heeft geen bestandsnaam gemeld');
+        if(!fileName)throw Error('De laadcontroller heeft geen bestandsnaam gemeld');
         await client.access({host:url.hostname,port:Number(url.port||21),user:decodeURIComponent(url.username),password:decodeURIComponent(url.password),secure:url.protocol==='ftps:'});
         const directory=decodeURIComponent(url.pathname||'/').replace(/\/$/,'')||'/',entries=await client.list(directory),entry=entries.find(row=>row.name===fileName);
         if(!entry)throw Error('Bestand staat nog niet op de FTP-server');
@@ -323,7 +332,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:entry.size===previousSize?'Upload afronden':'Bestand wordt ontvangen',percent:Math.min(84,65+attempts),uploadBytes:entry.size,uploadGrowing:previousSize!==null&&entry.size>previousSize});
         const remote=diagnosticRemotePath(directory,fileName);
         let snapshotContent=null;
-        // vsftpd does not allow a reliable RETR while the Homebox still has the
+        // vsftpd does not allow a reliable RETR while the laadcontroller still has the
         // same file open for writing. Ask the existing per-file stop watcher to
         // close only this upload, then read the now-stable snapshot next poll.
         const snapshotSafe=diagnosticFtpSnapshotSafe(entry.size,previousSize,stable);
@@ -417,8 +426,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     }catch{}finally{client.close();}
   };
   // Oude of afgebroken FTP-bestanden worden nooit vanzelf als een nieuwe diagnose hervat.
-  const restoreDiagnosticDebug=async ticket=>{if(!ticket?.originalDebug||ticket.debugRestored||ticket.debugRestoreBusy)return false;ticket.debugRestoreBusy=true;try{const result=await fleetCommander(ticket.chargerId,'ChangeConfiguration',{key:'chg_Debug',value:ticket.originalDebug},{timeoutMs:15_000});ticket.debugRestoreStatus=result?.status||'Onbekend';if(result?.status==='Accepted'){ticket.debugRestored=true;await clearPendingDiagnosticRestore(ticket.chargerId);return true;}return false;}catch(error){ticket.debugRestoreStatus='Wacht op een reagerende Homeboxverbinding: '+error.message;return false;}finally{ticket.debugRestoreBusy=false;}};
-  const waitForDiagnosticConnection=async ticket=>{const deadline=Date.now()+10*60_000;while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending){const item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===ticket.chargerId);if(item?.chargerConnected)return true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Wachten op Homeboxverbinding',percent:54,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'Diagnose gepauzeerd · hervat automatisch zodra de Homebox terug is',error:null});await new Promise(resolve=>setTimeout(resolve,5000));}return false;};
+  const restoreDiagnosticDebug=async ticket=>{if(!ticket?.originalDebug||ticket.debugRestored||ticket.debugRestoreBusy)return false;ticket.debugRestoreBusy=true;try{const result=await fleetCommander(ticket.chargerId,'ChangeConfiguration',{key:'chg_Debug',value:ticket.originalDebug},{timeoutMs:15_000});ticket.debugRestoreStatus=result?.status||'Onbekend';if(result?.status==='Accepted'){ticket.debugRestored=true;await clearPendingDiagnosticRestore(ticket.chargerId);return true;}return false;}catch(error){ticket.debugRestoreStatus='Wacht op een reagerende laadcontrollerverbinding: '+error.message;return false;}finally{ticket.debugRestoreBusy=false;}};
+  const waitForDiagnosticConnection=async ticket=>{const deadline=Date.now()+10*60_000;while(Date.now()<deadline&&diagnosticTokens.has(ticket.token)&&!ticket.ending){const item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===ticket.chargerId);if(item?.chargerConnected)return true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Wachten op laadcontrollerverbinding',percent:54,estimatedCompleteAt:new Date(Date.now()+15_000).toISOString()},{status:'Diagnose gepauzeerd · hervat automatisch zodra de laadcontroller terug is',error:null});await new Promise(resolve=>setTimeout(resolve,5000));}return false;};
   const failDiagnosticTicket=async(ticket,error,label='Diagnose mislukt')=>{if(!ticket||ticket.ending)return false;ticket.ending=true;updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'restoring',label:'Debug veilig herstellen',percent:94,estimatedCompleteAt:new Date(Date.now()+10_000).toISOString()},{status:'Debuginstelling herstellen na diagnosefout'});await restoreDiagnosticDebug(ticket);updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'failed',label,percent:100},{status:'Mislukt',error,debugRestoreStatus:ticket.debugRestoreStatus});releaseDiagnosticTicket(ticket);return true;};
   const scheduleLocalDiagnosticTimeout=ticket=>{setTimeout(()=>{const current=diagnosticReports.get(ticket.chargerId),phase=current?.progress?.phase;if(['complete','failed'].includes(phase)||!diagnosticTokens.has(ticket.token))return;void failDiagnosticTicket(ticket,'Geen diagnosebestand ontvangen via de laptop binnen de veilige wachttijd. Controleer de lokale ontvanger en firewall.','Lokale upload gestopt');},localUploadTimeoutMs).unref();};
   const requestAndTrackDiagnosticFile=async(ticket,location)=>{
@@ -426,19 +435,19 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     const sendCommand=()=>fleetCommander(ticket.chargerId,'GetDiagnostics',payload,{timeoutMs:30_000}).then(result=>({kind:'response',result})).catch(error=>({kind:'error',error}));
     let commandOutcome=sendCommand(),lastCommand=null;
     const ftpOutcome=diagnosticFtpUrl&&!ticket.localReceiver?waitForNewDiagnosticFtpFile(ticket,baseline).then(entry=>({kind:'ftp',entry})):null;
-    updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Homebox en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
-    const applyOutcome=outcome=>{if(outcome?.kind==='response'){lastCommand=outcome;ticket.fileName=outcome.result?.fileName||null;}else if(outcome?.kind==='error')lastCommand=outcome;else if(outcome?.kind==='ftp'&&outcome.entry){ticket.fileName=outcome.entry.name;ticket.fileDiscoveredWithoutResponse=true;if(!ticket.uploadConfirmed){ticket.uploadConfirmed=true;void fleetCommander(ticket.chargerId,'confirmDiagnosticsUpload',{fileName:ticket.fileName}).catch(()=>{});}}};
+    updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Laadcontroller en FTP parallel volgen',percent:58,estimatedCompleteAt:new Date(Date.now()+120_000).toISOString()},{status:'Wachten op diagnosebestand',error:null});
+    const applyOutcome=outcome=>{if(outcome?.kind==='response'){lastCommand=outcome;ticket.fileName=outcome.result?.fileName?requireStationDiagnosticFile(ticket.chargerId,outcome.result.fileName):null;}else if(outcome?.kind==='error')lastCommand=outcome;else if(outcome?.kind==='ftp'&&outcome.entry){ticket.fileName=requireStationDiagnosticFile(ticket.chargerId,outcome.entry.name);ticket.fileDiscoveredWithoutResponse=true;if(!ticket.uploadConfirmed){ticket.uploadConfirmed=true;void fleetCommander(ticket.chargerId,'confirmDiagnosticsUpload',{fileName:ticket.fileName}).catch(()=>{});}}};
     let outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome;applyOutcome(outcome);
     if(!ticket.fileName&&outcome.kind==='error'){
-      updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Homebox antwoordt niet · opdracht eenmaal opnieuw verstuurd',percent:60,estimatedCompleteAt:new Date(Date.now()+90_000).toISOString()},{status:'OCPP-opdracht veilig opnieuw proberen · FTP blijft gevolgd',error:null});
+      updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'Laadcontroller antwoordt niet · opdracht eenmaal opnieuw verstuurd',percent:60,estimatedCompleteAt:new Date(Date.now()+90_000).toISOString()},{status:'OCPP-opdracht veilig opnieuw proberen · FTP blijft gevolgd',error:null});
       commandOutcome=sendCommand();outcome=ftpOutcome?await Promise.race([commandOutcome,ftpOutcome]):await commandOutcome;applyOutcome(outcome);
     }
     if(!ticket.fileName&&ftpOutcome){
-      if(outcome.kind==='error')updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:61,estimatedCompleteAt:new Date(Date.now()+60_000).toISOString()},{status:'FTP controleren na ontbrekend Homebox-antwoord',error:null});
+      if(outcome.kind==='error')updateDiagnosticProgress(ticket.chargerId,ticket,{phase:'requesting',label:'OCPP-antwoord ontbreekt · FTP blijft gevolgd',percent:61,estimatedCompleteAt:new Date(Date.now()+60_000).toISOString()},{status:'FTP controleren na ontbrekend laadcontrollerantwoord',error:null});
       const ftpResult=outcome.kind==='ftp'?outcome:await ftpOutcome;
       applyOutcome(ftpResult);
     }
-    if(!ticket.fileName){const command=lastCommand||await commandOutcome;throw Error(command.kind==='error'?`${command.error.message}. De opdracht is eenmaal opnieuw verstuurd; er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De Homebox meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');}
+    if(!ticket.fileName){const command=lastCommand||await commandOutcome;throw Error(command.kind==='error'?`${command.error.message}. De opdracht is eenmaal opnieuw verstuurd; er verscheen ook geen nieuw diagnosebestand op de FTP-server.`:'De laadcontroller meldde geen bestandsnaam en er verscheen geen nieuw diagnosebestand op de FTP-server.');}
     if(diagnosticFtpUrl&&!ticket.localReceiver)scheduleFtpDiagnosticDownload(ticket.chargerId,ticket);else if(ticket.localReceiver)scheduleLocalDiagnosticTimeout(ticket);
     return lastCommand?.result||null;
   };
@@ -461,8 +470,8 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       Object.assign(charger,{connectors:relay.connectors||{},configuration:relay.configuration||[],configurationUpdatedAt:relay.configurationUpdatedAt||null,diagnosticsStatus:relay.diagnosticsStatus||null,diagnosticsStatusAt:relay.diagnosticsStatusAt||null,remoteDiagnostics:relay.remoteDiagnostics||null,transactionId:relay.transactionId??null});
       charger.roundTrips=Array.isArray(relay.roundTrips)?relay.roundTrips:[];charger.connectionStats=relay.connectionStats||null;const fleet=typeof fleetProvider==='function'?fleetProvider():[{...charger}];charger=mergePrimaryFleetState(charger,fleet);charger.fleet=fleet.map(item=>({...item,watchdog:auditStation(item,diagnosticReports.get(item.id))}));
       for(const item of fleet){const diagnosticRunning=[...diagnosticTokens.values()].some(ticket=>ticket.chargerId===item.id&&!ticket.ending),ocppResponsive=item.connectionDiagnostics?.bootAccepted||item.connectionDiagnostics?.chargerTrafficSeen||item.connectionDiagnostics?.chargerTransportResponsive||item.commandHealth?.status==='healthy';if(item.chargerConnected&&ocppResponsive&&!diagnosticRunning)void attemptPendingDiagnosticRestore(item.id);}
-      for(const ticket of diagnosticTokens.values()){const item=fleet.find(row=>row.id===ticket.chargerId),phase=diagnosticReports.get(ticket.chargerId)?.progress?.phase,status=String(item?.diagnosticsStatus||'');if(ticket.localReceiver&&!ticket.ending&&phase==='uploading'&&/UploadFailed/i.test(status)&&Date.parse(item?.diagnosticsStatusAt||0)>=Date.parse(ticket.requestedAt||0))void failDiagnosticTicket(ticket,'De Homebox meldde UploadFailed voor de lokale FTP-overdracht. Controleer poort 2121 en de passieve datapoort 50000.','Lokale FTP-upload mislukt');}
-      if(diagnosticFtpUrl)for(const item of fleet){const remote=item.remoteDiagnostics;if(!remote?.fileName||importedRemoteDiagnostics.has(remote.messageId))continue;importedRemoteDiagnostics.add(remote.messageId);const remoteHost=String(remote.locationHost||'').toLowerCase(),sameDestination=!!remoteHost&&remoteHost===diagnosticFtpHost;const ticket={chargerId:item.id,requestedAt:remote.requestedAt||new Date().toISOString(),source:'Robo Charge',destination:sameDestination?diagnosticDestination:`Externe FTP (${remoteHost||'onbekend'})`,locationHost:remoteHost||null,expiresAt:Date.now()+15*60_000,fileName:remote.fileName};diagnosticReports.set(item.id,{...ticket,status:sameDestination?'FTP-upload wordt gevolgd':'Bestand bij externe FTP',transport:'FTP',error:sameDestination?null:'De backoffice heeft de Homebox naar een andere FTP gestuurd; LaadFix heeft dat bestand niet ontvangen.'});if(sameDestination)scheduleFtpDiagnosticDownload(item.id,ticket);}
+      for(const ticket of diagnosticTokens.values()){const item=fleet.find(row=>row.id===ticket.chargerId),phase=diagnosticReports.get(ticket.chargerId)?.progress?.phase,status=String(item?.diagnosticsStatus||'');if(ticket.localReceiver&&!ticket.ending&&phase==='uploading'&&/UploadFailed/i.test(status)&&Date.parse(item?.diagnosticsStatusAt||0)>=Date.parse(ticket.requestedAt||0))void failDiagnosticTicket(ticket,'De laadcontroller meldde UploadFailed voor de lokale FTP-overdracht. Controleer poort 2121 en de passieve datapoort 50000.','Lokale FTP-upload mislukt');}
+      if(diagnosticFtpUrl)for(const item of fleet){const remote=item.remoteDiagnostics;if(!remote?.fileName||importedRemoteDiagnostics.has(remote.messageId))continue;importedRemoteDiagnostics.add(remote.messageId);if(!diagnosticFileBelongsToStation(item.id,remote.fileName)){diagnosticReports.set(item.id,{chargerId:item.id,status:'Mislukt',requestedAt:remote.requestedAt||new Date().toISOString(),fileName:remote.fileName,error:`Diagnosebestand hoort niet bij het geselecteerde laadstation ${item.id}`});continue;}const remoteHost=String(remote.locationHost||'').toLowerCase(),sameDestination=!!remoteHost&&remoteHost===diagnosticFtpHost;const ticket={chargerId:item.id,requestedAt:remote.requestedAt||new Date().toISOString(),source:'Robo Charge',destination:sameDestination?diagnosticDestination:`Externe FTP (${remoteHost||'onbekend'})`,locationHost:remoteHost||null,expiresAt:Date.now()+15*60_000,fileName:requireStationDiagnosticFile(item.id,remote.fileName)};diagnosticReports.set(item.id,{...ticket,status:sameDestination?'FTP-upload wordt gevolgd':'Bestand bij externe FTP',transport:'FTP',error:sameDestination?null:'De backoffice heeft de laadcontroller naar een andere FTP gestuurd; LaadFix heeft dat bestand niet ontvangen.'});if(sameDestination)scheduleFtpDiagnosticDownload(item.id,ticket);}
       for(const item of fleet){if(!item.chargerConnected||!item.connectionDiagnostics?.bootAccepted){watchdogRequested.delete(item.id);continue;}if(watchdogRequested.has(item.id)||deferBackgroundReadings(item.id))continue;watchdogRequested.add(item.id);setTimeout(async()=>{const current=(typeof fleetProvider==='function'?fleetProvider():[charger]).find(row=>row.id===item.id);if(!current?.chargerConnected||current.connectedAt!==item.connectedAt||!current.connectionDiagnostics?.bootAccepted)return;const deferred=()=>{if(!deferBackgroundReadings(item.id))return false;watchdogRequested.delete(item.id);return true;};if(deferred())return;const command=(action,payload)=>typeof fleetCommander==='function'?fleetCommander(item.id,action,payload):relayCommand(action,payload);let status;try{status=await command('TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1});}catch{return;}if(status?.status!=='Accepted'||deferred())return;try{await command('GetConfiguration',{});}catch{}if(deferred())return;try{await command('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch{}},20000).unref();}
     }catch{charger={...charger,relayReachable:false,chargerConnected:false,backendConnected:false,status:'Offline',relayError:'Lokale OCPP-tussenserver niet bereikbaar'};}
     charger.simulatedStatus=statusSimulation;
@@ -490,7 +499,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     lastSentLimit=limit;lastControlResult=result;lastControlError=null;return result;
   }
   const timer = setInterval(()=>state=engine.tick(),1000); timer.unref();
-  const controlTimer=hardware?setInterval(async()=>{if(!liveControl||busy||!charger.chargerConnected)return;const target=state.result.actualA||0;if(lastSentLimit===target)return;busy=true;try{const result=await applyLimit(target);if(result?.status!=='Accepted')throw Error('Homebox antwoordt '+(result?.status||'onbekend'));}catch(e){lastControlError=e.message;liveControl=false;}finally{busy=false;}},5000):null;controlTimer?.unref();
+  const controlTimer=hardware?setInterval(async()=>{if(!liveControl||busy||!charger.chargerConnected)return;const target=state.result.actualA||0;if(lastSentLimit===target)return;busy=true;try{const result=await applyLimit(target);if(result?.status!=='Accepted')throw Error('laadcontroller antwoordt '+(result?.status||'onbekend'));}catch(e){lastControlError=e.message;liveControl=false;}finally{busy=false;}},5000):null;controlTimer?.unref();
   const hardwareTimer=hardware?setInterval(refreshHardware,2000):null;hardwareTimer?.unref();if(hardware)refreshHardware();
   const meterTimer=hardware?setInterval(async()=>{const meter=extractMeterReadings(charger.meterValues,charger.lastMeterValues);if(deferBackgroundReadings(charger.id)||!charger.chargerConnected||!charger.backendConnected||!meter.stale||Date.now()-lastMeterRequest<60000)return;lastMeterRequest=Date.now();try{meterRequestResult=await relayCommand('TriggerMessage',{requestedMessage:'MeterValues',connectorId:1});}catch(e){meterRequestResult={error:e.message};}},meterPollIntervalMs):null;meterTimer?.unref();
   const files = new Map([['/',['ems.html','text/html; charset=utf-8']],['/app.mjs',['app.mjs','text/javascript; charset=utf-8']],['/configuration-help.mjs',['configuration-help.mjs','text/javascript; charset=utf-8']],['/dashboard.css',['dashboard.css','text/css; charset=utf-8']],['/recovery-ui.mjs',['recovery-ui.mjs','text/javascript; charset=utf-8']],['/recovery.css',['recovery.css','text/css; charset=utf-8']],['/laadfix-receiver-windows.zip',['laadfix-receiver-windows.zip','application/zip']]]);
@@ -544,7 +553,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       const chargerId=String(req.headers['x-charger-id']||''),encodedName=String(req.headers['x-file-name']||'');let fileName='';
       try{fileName=decodeURIComponent(encodedName);}catch{return send(400,{error:'Ongeldige bestandsnaam'});}
       if(!recoveryStations().some(item=>item.id===chargerId))return send(400,{error:'Onbekend laadstation'});
-      if(!/^[A-Za-z0-9._-]{1,180}\.(?:xls|log|txt)$/i.test(fileName))return send(400,{error:'Kies een .xls-, .log- of .txt-bestand'});
+      if(!diagnosticFileBelongsToStation(chargerId,fileName))return send(400,{error:`Dit bestand hoort niet bij laadstation ${chargerId}`});
       try{const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>5*1024*1024)throw Error('Diagnosebestand is groter dan 5 MB');chunks.push(chunk);}const ticket={chargerId,requestedAt:new Date().toISOString(),source:'Handmatige browserupload',destination:'LaadFix online analyse',locationHost:publicName,expiresAt:Date.now()+15*60_000,fileName},content=Buffer.concat(chunks);diagnosticFiles.set(chargerId,{fileName,content,receivedAt:new Date().toISOString()});let report={...buildDiagnosticReport(chargerId,ticket,content),downloadReady:true},textFileName=null;try{textFileName=await persistDiagnosticText(chargerId,report,content);}catch{}report={...report,textFileName};await rememberDiagnosticReport(chargerId,report);return send(201,{report});}catch(e){return send(400,{error:e.message});}
     }
     if(req.method==='GET'&&files.has(req.url)){const [file,type]=files.get(req.url);res.writeHead(200,{'Content-Type':type,'Cache-Control':'no-store, max-age=0','Pragma':'no-cache'});res.end(readFileSync(new URL(file,import.meta.url)));return;}
@@ -554,6 +563,15 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
     try{
       let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>260000)throw Error('Aanvraag te groot');}
       const body=JSON.parse(raw);
+      if(req.url==='/api/diagnostics-dismiss'){
+        const chargerId=String(body.id||'');
+        if(!recoveryStations().some(item=>item.id===chargerId))throw Error('Onbekend laadstation');
+        const report=diagnosticReports.get(chargerId);
+        if(report?.progress?.phase!=='failed'&&report?.status!=='Mislukt')return send(409,{error:'Er is geen mislukte diagnose om te sluiten'});
+        for(const ticket of diagnosticTokens.values())if(ticket.chargerId===chargerId)releaseDiagnosticTicket(ticket);
+        activeFtpTickets.delete(chargerId);diagnosticReports.delete(chargerId);
+        return send(200,{status:'Foutmelding gesloten',chargerId});
+      }
       if(req.url==='/api/fleet-register'){
         const result=await registerStation(body.id);await refreshHardware();const registeredFleet=typeof fleetProvider==='function'?fleetProvider():charger.fleet;return send(result.alreadyRegistered?200:201,{result,fleet:registeredFleet});
       }
@@ -577,7 +595,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(!diagnosticFtpUrl)throw Error('Er is geen diagnose-FTP ingesteld');
         const chargerId=String(body.id||''),fileName=String(body.fileName||'').trim();
         if(!recoveryStations().some(item=>item.id===chargerId))throw Error('Onbekend laadstation');
-        if(!/^[A-Za-z0-9._-]{1,180}$/.test(fileName)||!fileName.startsWith(chargerId+'-diag-'))throw Error('Bestandsnaam hoort niet bij dit laadstation');
+        if(!diagnosticFileBelongsToStation(chargerId,fileName))throw Error('Bestandsnaam hoort niet bij dit laadstation');
         const ticket={chargerId,requestedAt:new Date().toISOString(),source:'Handmatige bestandsnaam',destination:diagnosticDestination,locationHost:diagnosticFtpHost,expiresAt:Date.now()+15*60_000,fileName};
         diagnosticReports.set(chargerId,{...ticket,status:'FTP-bestand wordt gezocht',transport:'FTP'});
         scheduleFtpDiagnosticDownload(chargerId,ticket);return send(202,{status:'FTP-bestand wordt gezocht',fileName});
@@ -610,7 +628,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         const requestedKeys=Array.isArray(body.keys)?body.keys.map(String).filter(key=>/^[A-Za-z0-9_.:-]{1,100}$/.test(key)).slice(0,100):null;
         let diagnosticToken=null,diagnosticLocation=null;
         if(action==='diagnostics'){
-          if(item.connectionDiagnostics&&!diagnosticStationResponsive(item))throw Error('De Homebox heeft momenteel geen open verbinding met LaadFix.');
+          if(item.connectionDiagnostics&&!diagnosticStationResponsive(item))throw Error('De laadcontroller heeft momenteel geen open verbinding met LaadFix.');
           const activeTicket=[...diagnosticTokens.values()].find(ticket=>ticket.chargerId===chargerId&&ticket.expiresAt>Date.now()),activeDiagnostic=diagnosticReports.get(chargerId),activePhase=activeDiagnostic?.progress?.phase;
           if(activeTicket&&activePhase&&!['complete','failed'].includes(activePhase))return send(409,{error:`Er loopt al een diagnose (${activeDiagnostic.progress.label||activePhase}). Wacht tot deze klaar is.`});
           if(!publicName&&!diagnosticFtpUrl)throw Error('Voor diagnose-upload is een eigen LaadFix-opslag nodig');
@@ -638,7 +656,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             ticket.freshSessionStartedAt=freshSessionStartedAt;
             let reconnected=false,disconnected=false,observeUntil=Date.now()+(reset?.status==='Accepted'?diagnosticReconnectWaitMs:Math.min(8_000,diagnosticReconnectWaitMs));
             while(Date.now()<observeUntil){item=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(item?.chargerConnected&&Number(item.connectionDiagnostics?.sessionId||0)>sessionBefore){reconnected=true;break;}if(!item?.chargerConnected&&!disconnected){disconnected=true;observeUntil=Date.now()+diagnosticReconnectWaitMs;}await new Promise(resolve=>setTimeout(resolve,Math.min(1000,Math.max(1,observeUntil-Date.now()))));}
-            if(reset?.status==='Accepted'&&!reconnected)throw Error('Homebox kwam niet binnen 90 seconden terug na de soft reset');
+            if(reset?.status==='Accepted'&&!reconnected)throw Error('laadcontroller kwam niet binnen 90 seconden terug na de soft reset');
             active=!!item?.activeTransaction||['Charging','Preparing','Finishing'].includes(item?.status);ticket.freshStart=reconnected;
             ticket.sessionNote=reconnected?(reset?.status==='Accepted'?'Nieuwe controllersessie gedetecteerd':`Soft reset meldde ${reset?.status||'geen bevestiging'}, maar de werkelijke herstart is gedetecteerd`):`Soft reset ${reset?.status||'niet bevestigd'}; geen nieuwe sessie bevestigd, het tijdvak vanaf vóór het resetcommando wordt gebruikt`;
           }
@@ -675,14 +693,14 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           const captureStartedAt=Date.now();updateDiagnosticProgress(chargerId,ticket,{phase:'capturing',label:'Gerichte logging verzamelen',percent:20,phaseStartedAt:new Date(captureStartedAt).toISOString(),phaseEndsAt:new Date(captureStartedAt+captureMs).toISOString(),estimatedCompleteAt:new Date(captureStartedAt+captureMs+(ticket.transferEstimateMs||100_000)+20_000).toISOString()},{status:'Gerichte logging verzamelen',transport:ticket.localReceiver?'Lokale FTP + HTTPS':'LaadFix FTP',debugRestoreStatus:'Wordt na ontvangst automatisch hersteld'});
           setTimeout(async()=>{
             try{
-              if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
+              if(!await waitForDiagnosticConnection(ticket))throw Error('laadcontroller kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
               updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Diagnosebestand opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)+15_000).toISOString()},{status:'Diagnosebestand opvragen',error:null});
               const requestedAt=ocppDateTime(Date.now()),startTime=ticket.freshSessionStartedAt||ocppDateTime(Date.now()-captureMs);
               ticket.requestedAt=requestedAt;ticket.startTime=startTime;ticket.stopTime=requestedAt;
               const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
-              if(ticket.originalDebug)ticket.debugRestoreStatus='Wacht tot de Homebox de FTP-overdracht heeft gesloten';
+              if(ticket.originalDebug)ticket.debugRestoreStatus='Wacht tot de laadcontroller de FTP-overdracht heeft gesloten';
               if(!diagnosticTokens.has(ticket.token))return;
-              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus,error:null});
+              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'laadcontroller verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,debugRestoreStatus:ticket.debugRestoreStatus,error:null});
             }catch(error){
               await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');
             }
@@ -699,7 +717,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             const configurationTimeout=Math.max(1000,Math.min(15_000,Number(diagnosticConfigurationTimeoutMs)||10_000)),current=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId)||item,liveCachedRows=Array.isArray(current?.configuration)?current.configuration:[],knownRows=KNOWN_DIAGNOSTIC_CONFIGURATION[chargerId]||[],cachedRows=[...new Map([...knownRows,...liveCachedRows].map(row=>[String(row.key||'').toLowerCase(),row])).values()];
             updateDiagnosticProgress(chargerId,ticket,{phase:'configuration',label:'Actuele controllergegevens lezen',percent:22,estimatedCompleteAt:new Date(Date.now()+configurationTimeout+(ticket.transferEstimateMs||100_000)).toISOString()},{status:'Standaarddebug blijft ongewijzigd',error:null});
             let rows=[];
-            try{const read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];if(!rows.length)ticket.configurationWarning='De Homebox gaf geen actuele configuratieregels terug; de laatst bekende waarden worden gebruikt.';}catch(error){ticket.configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; de laatst bekende waarden worden gebruikt.`;}
+            try{const read=await fleetCommander(chargerId,'GetConfiguration',{}, {timeoutMs:configurationTimeout});rows=read?.configurationKey||read?.result?.configurationKey||[];if(!rows.length)ticket.configurationWarning='De laadcontroller gaf geen actuele configuratieregels terug; de laatst bekende waarden worden gebruikt.';}catch(error){ticket.configurationWarning=`Actuele configuratie antwoordde niet binnen ${Math.round(configurationTimeout/1000)} seconden; de laatst bekende waarden worden gebruikt.`;}
             const combinedConfiguration=new Map([...cachedRows,...rows].map(row=>[String(row.key||'').toLowerCase(),{key:row.key,value:row.value,readonly:!!row.readonly}]));ticket.configuration=[...combinedConfiguration.values()];ticket.meterSettings=ticket.configuration.filter(row=>/^chg_KWH[12]$/i.test(row.key)).map(row=>({key:row.key,value:row.value}));
             const configurationPreview={...buildDiagnosticReport(chargerId,ticket,Buffer.from('00:00:00:Actuele controllerconfiguratie ontvangen\n')),status:'Live uitlezing',liveStage:'configuration',bytes:0,receivedAt:new Date().toISOString()};ticket.livePreview=configurationPreview;diagnosticReports.set(chargerId,{...diagnosticReports.get(chargerId),configurationWarning:ticket.configurationWarning,livePreview:configurationPreview});
             updateDiagnosticProgress(chargerId,ticket,{phase:'requesting',label:'Standaardlog opvragen',percent:55,estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:'Configuratie gelezen · standaardlog wordt opgehaald',error:null});
@@ -709,18 +727,18 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             try{
               await readNormalConfiguration();
               const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
-              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Upload verwacht',fileName:ticket.fileName,controllerResponse:result,error:null});
-              return send(200,{result,serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en upload worden gevolgd'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
+              updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:'laadcontroller verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Upload verwacht',fileName:ticket.fileName,controllerResponse:result,error:null});
+              return send(200,{result,serviceResult:{status:'Diagnoseopdracht gestart',steps:['laadcontroller-opdracht en upload worden gevolgd'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
             }catch(error){await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');throw error;}
           }
           setTimeout(async()=>{try{
-            if(!await waitForDiagnosticConnection(ticket))throw Error('Homebox kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
+            if(!await waitForDiagnosticConnection(ticket))throw Error('laadcontroller kwam niet binnen tien minuten terug; de diagnose is veilig gestopt');
             await readNormalConfiguration();
             const result=await requestAndTrackDiagnosticFile(ticket,diagnosticLocation);
             if(!diagnosticTokens.has(ticket.token))return;
-            updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'Homebox verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,error:null});
+            updateDiagnosticProgress(chargerId,ticket,{phase:'uploading',label:ticket.fileDiscoveredWithoutResponse?'FTP-bestand gevonden zonder OCPP-antwoord':'laadcontroller verstuurt het bestand',percent:65,phaseStartedAt:new Date().toISOString(),estimatedCompleteAt:new Date(Date.now()+(ticket.transferEstimateMs||100_000)).toISOString()},{status:ticket.localReceiver?'Lokale upload wordt gevolgd':'Online upload wordt gevolgd',fileName:ticket.fileName,controllerResponse:result,error:null});
           }catch(error){await failDiagnosticTicket(ticket,error.message,'Diagnose mislukt');}},0).unref();
-          return send(200,{serviceResult:{status:'Diagnoseopdracht gestart',steps:['Homebox-opdracht en FTP-upload worden parallel gevolgd','Een ontvangen bestand wordt ook zonder OCPP-antwoord verwerkt'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
+          return send(200,{serviceResult:{status:'Diagnoseopdracht gestart',steps:['laadcontroller-opdracht en FTP-upload worden parallel gevolgd','Een ontvangen bestand wordt ook zonder OCPP-antwoord verwerkt'],advice:'De voortgang en ontvangen gegevens verschijnen automatisch.'}});
         }
         const commands={
           heartbeat:['TriggerMessage',{requestedMessage:'Heartbeat'}],
@@ -748,16 +766,16 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             const field=action==='status'?'lastStatusNotification':'lastMeterValues',before=action==='status'?beforeStatus:beforeMeter,deadline=Date.now()+8000;
             while(Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,500));const latest=(typeof fleetProvider==='function'?fleetProvider():[]).find(row=>row.id===chargerId);if(latest?.[field]&&latest[field]!==before){update=latest;break;}}
           }
-          const steps=[`${chargerId}: ${ocppAction}`,`Homebox antwoord: ${result?.status||result?.fileName||'ontvangen'}`];let status='Remote actie verzonden',advice=null;
+          const steps=[`${chargerId}: ${ocppAction}`,`laadcontroller antwoord: ${result?.status||result?.fileName||'ontvangen'}`];let status='Remote actie verzonden',advice=null;
           if(action==='status'){
             status=update?'Nieuwe status ontvangen':'Verzoek geaccepteerd, geen nieuw statusbericht ontvangen';
             if(update)steps.push(`Connector 1: ${update.status||'Onbekend'}`,`Foutcode: ${update.errorCode||'NoError'}`,`Ontvangen: ${new Date(update.lastStatusNotification).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`);
-            else advice='De Homebox heeft TriggerMessage aangenomen, maar stuurde binnen 8 seconden geen StatusNotification. De laatst bekende status blijft zichtbaar bovenaan.';
+            else advice='De laadcontroller heeft TriggerMessage aangenomen, maar stuurde binnen 8 seconden geen StatusNotification. De laatst bekende status blijft zichtbaar bovenaan.';
           }
           if(action==='meterValues'){
             status=update?'Nieuwe meterwaarden ontvangen':'Verzoek geaccepteerd, geen nieuwe meterwaarden ontvangen';
             if(update){const row=update.meterHistory?.[0],value=(sample,fallback='niet meegestuurd')=>sample&&Number.isFinite(Number(sample.value))?`${Number(sample.value).toLocaleString('nl-NL',{maximumFractionDigits:3})} ${sample.unit||''}`.trim():fallback;steps.push(`Meting: ${new Date(update.lastMeterValues).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`,`Energiestand: ${value(row?.energy)}`,`Spanning L1: ${value(row?.voltageL1)}`,`Stroom L1: ${value(row?.currentL1)}`,`Frequentie: ${value(row?.frequency)}`,`Temperatuur: ${value(row?.temperature)}`,update.lastMeterForwarded?'Doorgestuurd naar Robo Charge':'Nog niet doorgestuurd naar Robo Charge');}
-            else advice='Deze Homebox antwoordt buiten een actieve laadsessie mogelijk niet met MeterValues. De laatst opgeslagen meting blijft beschikbaar onder Meterwaarden.';
+            else advice='Deze laadcontroller antwoordt buiten een actieve laadsessie mogelijk niet met MeterValues. De laatst opgeslagen meting blijft beschikbaar onder Meterwaarden.';
           }
           if(action==='meterIdentification'){
             const outcome=result?.status||'Geen status';status='Meteridentificatieproef: '+outcome;steps.push('Vendor: Ecotap','Opdracht: GetMeterInfo','Antwoorddata: '+(result?.data??'niet meegestuurd'));
@@ -765,18 +783,18 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
           }
           if(!['status','meterValues'].includes(action)){
             const accepted=result?.status==='Accepted',descriptions={
-              softReset:[accepted?'Soft reset geaccepteerd':'Soft reset niet geaccepteerd','De laadsoftware wordt opnieuw gestart. De OCPP-verbinding kan kort verdwijnen.','Controleer of Homebox en backend binnen enkele minuten weer verbonden zijn.'],
+              softReset:[accepted?'Soft reset geaccepteerd':'Soft reset niet geaccepteerd','De laadsoftware wordt opnieuw gestart. De OCPP-verbinding kan kort verdwijnen.','Controleer of laadcontroller en backend binnen enkele minuten weer verbonden zijn.'],
               hardReset:[accepted?'Harde reset geaccepteerd':result?.status==='Rejected'?'Harde reset verstuurd · herstart controleren':'Harde reset niet geaccepteerd',result?.status==='Rejected'?'Deze Ecotap-firmware kan Rejected antwoorden en de controller toch herstarten. De echte uitkomst wordt bepaald door de verbrekings-, BootNotification- en herverbindingssignalen.':'De volledige laadcontroller wordt opnieuw gestart. De verbinding valt tijdelijk weg.','Wacht tot de laadcontroller opnieuw is opgestart en controleer daarna de status.'],
-              operative:[accepted?'Connector wordt beschikbaar gemaakt':'Beschikbaar maken niet geaccepteerd',accepted?'Connector 1 is operatief gezet. Een nieuwe StatusNotification moet de actuele toestand bevestigen.':'De Homebox heeft ChangeAvailability niet aangenomen.','Vraag daarna de status opnieuw op om de werkelijke toestand te controleren.'],
-              inoperative:[accepted?'Connector wordt buiten gebruik gezet':'Buiten gebruik zetten niet geaccepteerd',accepted?'Connector 1 is inoperatief gezet. Een eventuele bezette connector kan de wijziging uitstellen.':'De Homebox heeft ChangeAvailability niet aangenomen.','Vraag daarna de status opnieuw op om de werkelijke toestand te controleren.'],
-              unlock:[accepted?'Ontgrendelopdracht geaccepteerd':'Stekker niet ontgrendeld',accepted?'De Homebox heeft opdracht gekregen connector 1 vrij te geven.':'De Homebox kon de connector niet vrijgeven.','Controleer de fysieke stekker en vraag daarna de status op.'],
-              clearCache:[accepted?'Autorisatiecache gewist':'Cache wissen niet geaccepteerd',accepted?'De lokale RFID-autorisatiecache van de Homebox is gewist.':'De Homebox heeft ClearCache geweigerd.','Nieuwe passen moeten opnieuw via de backoffice worden gecontroleerd.'],
-              clearProfile:[accepted?'Laadprofiel gewist':'Laadprofiel niet gewist',accepted?'Het TxDefaultProfile voor connector 1 is verwijderd.':'De Homebox vond of verwijderde het laadprofiel niet.','Controleer onder EMS of er nog een actieve vermogenslimiet wordt toegepast.'],
-              remoteStart:[accepted?'Startverzoek geaccepteerd':'Laadsessie niet gestart',accepted?'De Homebox heeft testtag LAADFIX ontvangen. StartTransaction en Charging moeten de echte start nog bevestigen.':'De Homebox heeft RemoteStartTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
-              remoteStop:[accepted?'Stopverzoek geaccepteerd':'Laadsessie niet gestopt',accepted?'De Homebox heeft opdracht gekregen de actieve transactie te beëindigen. StopTransaction bevestigt de echte stop.':'De Homebox heeft RemoteStopTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
-              backendReconnect:[result?.status==='Started'?'Nieuwe backofficeverbinding gestart':result?.status==='AlreadyConnected'?'Backoffice was al verbonden':'Backofficeverbinding wordt opgebouwd','Alleen de proxyverbinding naar de ingestelde backend is vernieuwd. De Homeboxsocket is open gebleven.','De proxy blijft automatisch opnieuw proberen. Gebruik deze knop alleen wanneer je direct een extra poging wilt starten.'],
-              changeConfiguration:[accepted?'Configuratiewijziging geaccepteerd':'Configuratiewijziging geweigerd',`Instelling ${configKey} is naar de Homebox verstuurd.`,accepted?'Lees de instelling opnieuw uit om de opgeslagen waarde te bevestigen.':'De huidige waarde is niet gewijzigd.'],
-              getConfiguration:['Configuratie ontvangen',`${Array.isArray(result?.configurationKey)?result.configurationKey.length:0} instellingen door de Homebox teruggestuurd.`,'De actuele waarden staan onder Configuratie.']
+              operative:[accepted?'Connector wordt beschikbaar gemaakt':'Beschikbaar maken niet geaccepteerd',accepted?'Connector 1 is operatief gezet. Een nieuwe StatusNotification moet de actuele toestand bevestigen.':'De laadcontroller heeft ChangeAvailability niet aangenomen.','Vraag daarna de status opnieuw op om de werkelijke toestand te controleren.'],
+              inoperative:[accepted?'Connector wordt buiten gebruik gezet':'Buiten gebruik zetten niet geaccepteerd',accepted?'Connector 1 is inoperatief gezet. Een eventuele bezette connector kan de wijziging uitstellen.':'De laadcontroller heeft ChangeAvailability niet aangenomen.','Vraag daarna de status opnieuw op om de werkelijke toestand te controleren.'],
+              unlock:[accepted?'Ontgrendelopdracht geaccepteerd':'Stekker niet ontgrendeld',accepted?'De laadcontroller heeft opdracht gekregen connector 1 vrij te geven.':'De laadcontroller kon de connector niet vrijgeven.','Controleer de fysieke stekker en vraag daarna de status op.'],
+              clearCache:[accepted?'Autorisatiecache gewist':'Cache wissen niet geaccepteerd',accepted?'De lokale RFID-autorisatiecache van de laadcontroller is gewist.':'De laadcontroller heeft ClearCache geweigerd.','Nieuwe passen moeten opnieuw via de backoffice worden gecontroleerd.'],
+              clearProfile:[accepted?'Laadprofiel gewist':'Laadprofiel niet gewist',accepted?'Het TxDefaultProfile voor connector 1 is verwijderd.':'De laadcontroller vond of verwijderde het laadprofiel niet.','Controleer onder EMS of er nog een actieve vermogenslimiet wordt toegepast.'],
+              remoteStart:[accepted?'Startverzoek geaccepteerd':'Laadsessie niet gestart',accepted?'De laadcontroller heeft testtag LAADFIX ontvangen. StartTransaction en Charging moeten de echte start nog bevestigen.':'De laadcontroller heeft RemoteStartTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
+              remoteStop:[accepted?'Stopverzoek geaccepteerd':'Laadsessie niet gestopt',accepted?'De laadcontroller heeft opdracht gekregen de actieve transactie te beëindigen. StopTransaction bevestigt de echte stop.':'De laadcontroller heeft RemoteStopTransaction geweigerd.','Bekijk Status of Berichten voor de definitieve uitkomst.'],
+              backendReconnect:[result?.status==='Started'?'Nieuwe backofficeverbinding gestart':result?.status==='AlreadyConnected'?'Backoffice was al verbonden':'Backofficeverbinding wordt opgebouwd','Alleen de proxyverbinding naar de ingestelde backend is vernieuwd. De laadcontrollersocket is open gebleven.','De proxy blijft automatisch opnieuw proberen. Gebruik deze knop alleen wanneer je direct een extra poging wilt starten.'],
+              changeConfiguration:[accepted?'Configuratiewijziging geaccepteerd':'Configuratiewijziging geweigerd',`Instelling ${configKey} is naar de laadcontroller verstuurd.`,accepted?'Lees de instelling opnieuw uit om de opgeslagen waarde te bevestigen.':'De huidige waarde is niet gewijzigd.'],
+              getConfiguration:['Configuratie ontvangen',`${Array.isArray(result?.configurationKey)?result.configurationKey.length:0} instellingen door de laadcontroller teruggestuurd.`,'De actuele waarden staan onder Configuratie.']
             },description=descriptions[action];
             if(description){status=description[0];steps.push(description[1]);advice=description[2];}
           }
@@ -786,9 +804,9 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
       if(req.url==='/api/reset'){engine.reset();state=engine.tick();return send(200,{...state,diagnostic});}
       if(req.url==='/api/control'){
         if(typeof body.enabled!=='boolean')throw Error('Ongeldige instelling');
-        if(!charger.chargerConnected||!charger.backendConnected)throw Error('Homebox en backoffice moeten beide verbonden zijn');
+        if(!charger.chargerConnected||!charger.backendConnected)throw Error('laadcontroller en backoffice moeten beide verbonden zijn');
         liveControl=body.enabled;lastControlError=null;
-        if(liveControl){const target=state.result.actualA||0;lastControlResult=await applyLimit(target);if(lastControlResult?.status!=='Accepted'){liveControl=false;throw Error('Homebox weigert het laadprofiel: '+(lastControlResult?.status||'onbekend'));}}
+        if(liveControl){const target=state.result.actualA||0;lastControlResult=await applyLimit(target);if(lastControlResult?.status!=='Accepted'){liveControl=false;throw Error('laadcontroller weigert het laadprofiel: '+(lastControlResult?.status||'onbekend'));}}
         else{lastControlResult=await relayCommand('ClearChargingProfile',{id:900001});lastSentLimit=null;if(lastControlResult?.status!=='Accepted'&&lastControlResult?.status!=='Unknown')throw Error('Testprofiel kon niet worden verwijderd: '+(lastControlResult?.status||'onbekend'));}
         return send(200,{liveControl,lastSentLimit,lastControlResult,lastControlError});
       }
@@ -799,17 +817,17 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
         if(busy)return send(429,{error:'Er loopt al een diagnose of opdracht'});busy=true;try{
           networkResult=await networkDiagnostics();
           const allOk=networkResult.dns.ok&&networkResult.backend.ok&&charger.chargerConnected&&charger.backendConnected;
-          serviceResult={action:'networkDiagnostics',status:allOk?'Netwerkdiagnose geslaagd':'Netwerkdiagnose vindt een aandachtspunt',steps:[`DNS Robo Charge: ${networkResult.dns.ok?'bereikbaar via '+networkResult.dns.address:'niet bereikbaar · '+(networkResult.dns.error||'onbekend')}`,`Robo Charge poort 80: ${networkResult.backend.ok?'bereikbaar':networkResult.backend.detail}`,`Homebox HTTP-poort 80: ${networkResult.homebox.ok?'bereikbaar':networkResult.homebox.detail}`,`Homebox → proxy: ${charger.chargerConnected?'OCPP verbonden':'niet verbonden'}`,`Proxy → Robo Charge: ${charger.backendConnected?'OCPP verbonden':'niet verbonden'}`],result:networkResult,advice:allOk?'De volledige OCPP-route is bereikbaar.':'Een gesloten HTTP-poort op de Homebox is niet automatisch een storing wanneer de uitgaande OCPP-verbinding wel actief is.',time:new Date().toISOString()};
+          serviceResult={action:'networkDiagnostics',status:allOk?'Netwerkdiagnose geslaagd':'Netwerkdiagnose vindt een aandachtspunt',steps:[`DNS Robo Charge: ${networkResult.dns.ok?'bereikbaar via '+networkResult.dns.address:'niet bereikbaar · '+(networkResult.dns.error||'onbekend')}`,`Robo Charge poort 80: ${networkResult.backend.ok?'bereikbaar':networkResult.backend.detail}`,`laadcontroller HTTP-poort 80: ${networkResult.homebox.ok?'bereikbaar':networkResult.homebox.detail}`,`laadcontroller → proxy: ${charger.chargerConnected?'OCPP verbonden':'niet verbonden'}`,`Proxy → Robo Charge: ${charger.backendConnected?'OCPP verbonden':'niet verbonden'}`],result:networkResult,advice:allOk?'De volledige OCPP-route is bereikbaar.':'Een gesloten HTTP-poort op de laadcontroller is niet automatisch een storing wanneer de uitgaande OCPP-verbinding wel actief is.',time:new Date().toISOString()};
           return send(200,{serviceResult,networkResult});
         }finally{busy=false;}
       }
       if(req.url==='/api/proxy-routing'){
         const charging=charger.activeTransaction||['Charging','Preparing','Finishing'].includes(charger.status);if(charging)throw Error('Proxyroute wijzigen is geblokkeerd tijdens een actieve of startende laadsessie');
-        if(busy)return send(429,{error:'Er loopt al een diagnose of opdracht'});busy=true;try{const result=await changeProxyRoute(body.upstream);serviceResult={action:'proxyRouting',status:'Proxybestemming gewijzigd',steps:[`Nieuwe route: ${result.upstream}`,'De Homebox wordt opnieuw verbonden met de gekozen OCPP-server'],advice:'Controleer binnen enkele minuten of beide verbindingen weer groen zijn.',result,time:new Date().toISOString()};return send(200,{serviceResult,result});}finally{busy=false;}
+        if(busy)return send(429,{error:'Er loopt al een diagnose of opdracht'});busy=true;try{const result=await changeProxyRoute(body.upstream);serviceResult={action:'proxyRouting',status:'Proxybestemming gewijzigd',steps:[`Nieuwe route: ${result.upstream}`,'De laadcontroller wordt opnieuw verbonden met de gekozen OCPP-server'],advice:'Controleer binnen enkele minuten of beide verbindingen weer groen zijn.',result,time:new Date().toISOString()};return send(200,{serviceResult,result});}finally{busy=false;}
       }
       if(req.url==='/api/service-command'){
         if(busy)return send(429,{error:'Er loopt al een diagnose of opdracht'});
-        if(!charger.chargerConnected)throw Error('Homebox is niet via OCPP verbonden');
+        if(!charger.chargerConnected)throw Error('laadcontroller is niet via OCPP verbonden');
         const charging=charger.activeTransaction||['Charging','Preparing','Finishing'].includes(charger.status);
         const commands={
           status:()=>relayCommand('TriggerMessage',{requestedMessage:'StatusNotification',connectorId:1}),
@@ -832,7 +850,7 @@ export async function startEMS({port=8080,host='127.0.0.1',hardware=true,ledHard
             const received=!!charger.lastMeterValues&&charger.lastMeterValues!==beforeMeter;
             const row=charger.meterHistory?.[0];
             const value=(item,fallback='niet meegestuurd')=>item?`${Number(item.value).toLocaleString('nl-NL',{maximumFractionDigits:3})} ${item.unit}`:fallback;
-            serviceResult={action:body.action,status:received?'Meterwaarden ontvangen':'Aanvraag geaccepteerd, maar geen nieuwe meterdata ontvangen',steps:[`Homebox antwoord: ${result?.status||'onbekend'}`,received?`Meting: ${new Date(row?.time||charger.lastMeterValues).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`:'Binnen 6 seconden kwam geen nieuw MeterValues-bericht terug',`Energiestand: ${value(row?.energy||meter.energy)}`,`Spanning L1: ${value(row?.voltageL1)}`,`Stroom L1: ${value(row?.currentL1||meter.current)}`,`Frequentie: ${value(row?.frequency)}`,`Temperatuur: ${value(row?.temperature)}`,received&&charger.lastMeterForwarded?'Doorgestuurd naar Robo Charge':'Geen nieuw meterbericht om door te sturen'].filter(Boolean),result:{request:result,meter},advice:received?'Deze meting blijft ook in de vaste meterhistorie staan.':'De laatst opgeslagen waarden staan hierboven; probeer opnieuw tijdens een actieve laadsessie voor een nieuwe meting.',time:new Date().toISOString()};
+            serviceResult={action:body.action,status:received?'Meterwaarden ontvangen':'Aanvraag geaccepteerd, maar geen nieuwe meterdata ontvangen',steps:[`laadcontroller antwoord: ${result?.status||'onbekend'}`,received?`Meting: ${new Date(row?.time||charger.lastMeterValues).toLocaleString('nl-NL',{timeZone:'Europe/Amsterdam'})}`:'Binnen 6 seconden kwam geen nieuw MeterValues-bericht terug',`Energiestand: ${value(row?.energy||meter.energy)}`,`Spanning L1: ${value(row?.voltageL1)}`,`Stroom L1: ${value(row?.currentL1||meter.current)}`,`Frequentie: ${value(row?.frequency)}`,`Temperatuur: ${value(row?.temperature)}`,received&&charger.lastMeterForwarded?'Doorgestuurd naar Robo Charge':'Geen nieuw meterbericht om door te sturen'].filter(Boolean),result:{request:result,meter},advice:received?'Deze meting blijft ook in de vaste meterhistorie staan.':'De laatst opgeslagen waarden staan hierboven; probeer opnieuw tijdens een actieve laadsessie voor een nieuwe meting.',time:new Date().toISOString()};
           }else serviceResult={action:body.action,result,time:new Date().toISOString()};
           return send(200,{serviceResult});
         }finally{busy=false;}
