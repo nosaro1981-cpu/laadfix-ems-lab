@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {startEMS} from './ems-server.mjs';
+import {diagnosticFastScanEnabled,startEMS} from './ems-server.mjs';
+
+test('normal diagnostics always preserve the complete received file',()=>{
+  assert.equal(diagnosticFastScanEnabled({normalMode:true,fastScan:true}),false);
+  assert.equal(diagnosticFastScanEnabled({normalMode:true,fastScan:false}),false);
+  assert.equal(diagnosticFastScanEnabled({fastScan:true}),true);
+});
 
 for (const quietDiagnostics of [false, true]) test(`automatic meter requests respect optional upload quiet mode: ${quietDiagnostics}`, async () => {
   const station={id:'QUIET-TEST',chargerConnected:true,backendConnected:true,status:'Available',configuration:[{key:'chg_KWH1',value:'TEST'}]};
